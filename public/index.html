@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mediasoup SFU Client</title>
+    <style>
+        body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; }
+        .container { border: 1px solid #ccc; padding: 10px; margin: 10px; border-radius: 5px; width: 90%; max-width: 800px; }
+        #remote-videos .video-item { border: 1px solid #eee; padding: 5px; margin-bottom: 5px; }
+        video { background-color: black; width: 100%; max-width: 320px; }
+        input, button { margin: 5px; padding: 8px; }
+    </style>
+<script defer src="bundle.js"></script></head>
+<body>
+    <h1>Mediasoup SFU Client</h1>
+
+    <div class="container">
+        <h2>Connection</h2>
+        <input type="text" id="roomId" placeholder="Room ID">
+        <input type="text" id="userId" placeholder="User ID">
+        <button id="joinBtn">Join Room</button>
+        <button id="leaveBtn" disabled>Leave Room</button>
+    </div>
+
+    <div class="container">
+        <h2>My Media</h2>
+        <video id="localVideo" autoplay muted playsinline></video>
+        <button id="produceBtn" disabled>Start Webcam</button>
+        <div>Send Transport: <span id="sendTransportStatus">Inactive</span></div>
+        <div>Recv Transport: <span id="recvTransportStatus">Inactive</span></div>
+        <div>Video ID: <span id="videoId">N/A</span></div>
+        <div>Audio ID: <span id="audioId">N/A</span></div>
+    </div>
+
+    <div class="container">
+        <h2>Remote Groups</h2>
+        <div id="remote-videos"></div>
+    </div>
+</body>
+</html>
