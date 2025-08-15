@@ -231,6 +231,37 @@ io.on('connection', (socket) => {
         callback({ result: true, data: { groups: Array.from(room.groups.entries()) } });
     });
 
+    socket.on('del_group', (data, callback) => {
+        const { groupId } = data;
+        const room = rooms[roomId];
+        const clientData = room.clients.get(clientId);
+
+        if (!room || !clientData) {
+            return callback({ result: false, data: 'Not in a room' });
+        }
+
+        const groupToDelete = room.groups.get(groupId);
+
+        if (!groupToDelete) {
+            return callback({ result: false, data: `Group with ID ${groupId} not found.` });
+        }
+
+        if (groupToDelete.clientId !== clientId) {
+            return callback({ result: false, data: 'Not authorized to delete this group.' });
+        }
+
+        // Delete the group from the room and the client's list
+        room.groups.delete(groupId);
+        clientData.groups.delete(groupId);
+
+        console.log(`Group ${groupId} DELETED by client ${clientId}`);
+
+        // Notify everyone in the room
+        io.to(roomId).emit('update_groups', { groups: Array.from(room.groups.entries()) });
+
+        callback({ result: true, data: { deletedGroupId: groupId } });
+    });
+
     socket.on('consume', async (data, callback) => {
         const { producerId, transportId } = data;
         const room = rooms[roomId];
