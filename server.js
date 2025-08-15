@@ -170,24 +170,59 @@ io.on('connection', (socket) => {
     });
 
     socket.on('set_group', (data, callback) => {
-        const { video_id, audio_id } = data;
+        const { groupId, video_id, audio_id } = data;
         const room = rooms[roomId];
         const clientData = room.clients.get(clientId);
-        if (!room || !clientData) return callback({ result: false, data: 'Not in a room' });
 
-        if (!clientData.producers.has(video_id) || !clientData.producers.has(audio_id)) {
-            return callback({ result: false, data: 'Producers not found' });
+        if (!room || !clientData) {
+            return callback({ result: false, data: 'Not in a room' });
         }
 
-        const groupId = room.nextGroupId++;
-        const groupData = { video_id, audio_id, clientId };
-        
-        room.groups.set(groupId, groupData);
-        clientData.groups.set(groupId, groupData);
+        // Validate IDs and set to "NULL" if invalid
+        const final_video_id = clientData.producers.has(video_id) ? video_id : "NULL";
+        const final_audio_id = clientData.producers.has(audio_id) ? audio_id : "NULL";
 
-        console.log(`Group ${groupId} created for client ${clientId}`);
-        io.to(roomId).emit('update_groups', { groups: Array.from(room.groups.entries()) });
-        callback({ result: true, data: { groupId } });
+        // Case 1: Create a new group if groupId is 0 or not provided
+        if (!groupId) {
+            const newGroupId = room.nextGroupId++;
+            const groupData = {
+                groupId: newGroupId,
+                video_id: final_video_id,
+                audio_id: final_audio_id,
+                clientId
+            };
+
+            room.groups.set(newGroupId, groupData);
+            clientData.groups.set(newGroupId, groupData);
+
+            console.log(`Group ${newGroupId} CREATED for client ${clientId}:`, groupData);
+            io.to(roomId).emit('update_groups', { groups: Array.from(room.groups.entries()) });
+            callback({ result: true, data: groupData });
+        }
+        // Case 2: Edit an existing group
+        else {
+            const groupToEdit = room.groups.get(groupId);
+
+            if (!groupToEdit) {
+                return callback({ result: false, data: `Group with ID ${groupId} not found.` });
+            }
+            if (groupToEdit.clientId !== clientId) {
+                return callback({ result: false, data: 'Not authorized to edit this group.' });
+            }
+
+            const updatedGroupData = {
+                ...groupToEdit,
+                video_id: final_video_id,
+                audio_id: final_audio_id
+            };
+
+            room.groups.set(groupId, updatedGroupData);
+            clientData.groups.set(groupId, updatedGroupData); // Also update the client's own map
+
+            console.log(`Group ${groupId} EDITED by client ${clientId}:`, updatedGroupData);
+            io.to(roomId).emit('update_groups', { groups: Array.from(room.groups.entries()) });
+            callback({ result: true, data: updatedGroupData });
+        }
     });
 
     socket.on('get_groups', (data, callback) => {

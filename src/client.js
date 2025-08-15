@@ -111,7 +111,13 @@ async function handleStartProducing() {
         ui.updateProducerIds(videoProducer.id, audioProducer.id);
         ui.disableProduceButton();
 
-        await socket.setGroup({ video_id: videoProducer.id, audio_id: audioProducer.id });
+        // Create a new group by sending groupId = 0 (or null)
+        const newGroup = await socket.setGroup({ 
+            groupId: 0, 
+            video_id: videoProducer.id, 
+            audio_id: audioProducer.id 
+        });
+        console.log('New group created:', newGroup);
 
     } catch (error) {
         console.error('Failed to start producing:', error);
@@ -121,7 +127,7 @@ async function handleStartProducing() {
 
 async function refreshGroupList() {
     const { groups } = await socket.getGroups();
-    ui.renderGroups(groups, ui.elements.userIdInput.value, handleConsumeStream);
+    ui.renderGroups(groups, ui.elements.userIdInput.value, handleConsumeStream, handleEditGroup);
 }
 
 async function handleConsumeStream(producerId, kind, groupId) {
@@ -153,5 +159,22 @@ function handleSocketDisconnect() {
 
 function handleGroupUpdate({ groups }) {
     console.log('Received group update:', groups);
-    ui.renderGroups(groups, ui.elements.userIdInput.value, handleConsumeStream);
+    ui.renderGroups(groups, ui.elements.userIdInput.value, handleConsumeStream, handleEditGroup);
+}
+
+async function handleEditGroup(groupId) {
+    if (!videoProducer || !audioProducer) {
+        return alert('You must be producing video and audio to update a group.');
+    }
+    try {
+        const updatedGroup = await socket.setGroup({
+            groupId, // The actual groupId to edit
+            video_id: videoProducer.id,
+            audio_id: audioProducer.id,
+        });
+        console.log(`Successfully edited group ${groupId}:`, updatedGroup);
+    } catch (error) {
+        console.error('Failed to edit group:', error);
+        alert('Failed to edit group: ' + error);
+    }
 }

@@ -57,8 +57,10 @@ export function disableProduceButton() {
     elements.produceBtn.disabled = true;
 }
 
-export function renderGroups(groups, currentUserId, onConsume) {
+export function renderGroups(groups, currentUserId, onConsume, onEdit) {
     elements.remoteVideosContainer.innerHTML = '';
+    
+    // Render remote user groups
     for (const [groupId, groupInfo] of groups) {
         if (groupInfo.clientId === currentUserId) continue;
 
@@ -68,17 +70,42 @@ export function renderGroups(groups, currentUserId, onConsume) {
             <h3>Group ${groupId} (from ${groupInfo.clientId})</h3>
             <video id="video-${groupId}" autoplay playsinline></video>
             <audio id="audio-${groupId}" autoplay></audio>
-            <button data-group-id="${groupId}" data-video-id="${groupInfo.video_id}" data-audio-id="${groupInfo.audio_id}">Consume</button>
+            <button class="consume-btn" data-group-id="${groupId}" data-video-id="${groupInfo.video_id}" data-audio-id="${groupInfo.audio_id}">Consume</button>
         `;
         elements.remoteVideosContainer.appendChild(div);
     }
 
-    elements.remoteVideosContainer.querySelectorAll('button').forEach(button => {
+    // Render my group controls
+    for (const [groupId, groupInfo] of groups) {
+        if (groupInfo.clientId === currentUserId) {
+            const div = document.createElement('div');
+            div.className = 'video-item my-group';
+            div.innerHTML = `
+                <h3>My Group ${groupId}</h3>
+                <p>Video ID: ${groupInfo.video_id}</p>
+                <p>Audio ID: ${groupInfo.audio_id}</p>
+                <button class="edit-btn" data-group-id="${groupId}">Update with Current Producers</button>
+            `;
+            // Prepend my group to the top of the list
+            elements.remoteVideosContainer.prepend(div);
+        }
+    }
+
+    elements.remoteVideosContainer.querySelectorAll('.consume-btn').forEach(button => {
         button.addEventListener('click', (e) => {
             const { groupId, videoId, audioId } = e.target.dataset;
             onConsume(videoId, 'video', groupId);
             onConsume(audioId, 'audio', groupId);
             e.target.disabled = true;
+        });
+    });
+
+    elements.remoteVideosContainer.querySelectorAll('.edit-btn').forEach(button => {
+        button.addEventListener('click', (e) => {
+            const { groupId } = e.target.dataset;
+            onEdit(Number(groupId)); // Ensure groupId is a number
+            e.target.textContent = 'Updated!';
+            setTimeout(() => { e.target.textContent = 'Update with Current Producers'; }, 1000);
         });
     });
 }
