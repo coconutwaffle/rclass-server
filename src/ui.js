@@ -1,3 +1,4 @@
+//ui.js
 export const elements = {
     roomIdInput: document.getElementById('roomId'),
     userIdInput: document.getElementById('userId'),

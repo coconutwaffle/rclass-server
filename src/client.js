@@ -1,3 +1,4 @@
+//client.js
 import * as ctr from './control.js';
 import * as ui from './ui.js';
 

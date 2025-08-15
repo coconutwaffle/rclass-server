@@ -1,3 +1,4 @@
+//config.js
 const config = {
   domain: 'test.coconutwaffle.org',
   port: 7000,
