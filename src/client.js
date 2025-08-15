@@ -1,14 +1,10 @@
-import { Device } from 'mediasoup-client';
-import * as socket from './socket.js';
+import * as ctr from './control.js';
 import * as ui from './ui.js';
 
-let device;
-let sendTransport;
-let recvTransport;
 let localStream;
 let videoProducer;
 let audioProducer;
-let consumers = new Map();
+let transports;
 
 // --- Initialize UI ---
 ui.setupInitialUI();
@@ -27,20 +23,9 @@ async function handleJoinRoom() {
     }
 
     try {
-        const { rtpCapabilities } = await socket.connectToServer(
-            roomId,
-            userId,
-            handleSocketDisconnect,
-            handleGroupUpdate
-        );
-
-        device = new Device();
-        await device.load({ routerRtpCapabilities: rtpCapabilities });
-
-        await socket.storeRtpCapabilities({ rtpCapabilities: device.rtpCapabilities });
-
-        await createTransports();
-
+        transports = await ctr.join_room(roomId, userId, handleSocketDisconnect, handleGroupUpdate);
+        transports.send.on('connectionstatechange', state => ui.updateTransportStatus('send', state));
+        transports.recv.on('connectionstatechange', state => ui.updateTransportStatus('recv', state));
         ui.updateUiForJoin();
         await refreshGroupList();
 
@@ -51,51 +36,15 @@ async function handleJoinRoom() {
     }
 }
 
+
 function handleLeaveRoom() {
-    socket.disconnect();
-    if (sendTransport) sendTransport.close();
-    if (recvTransport) recvTransport.close();
+    ctr.leave_room();
     if (localStream) {
         localStream.getTracks().forEach(track => track.stop());
     }
     ui.updateUiForLeave();
 }
 
-async function createTransports() {
-    // Send Transport
-    const sendParams = await socket.createTransport();
-    sendTransport = device.createSendTransport(sendParams);
-    sendTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
-        try {
-            await socket.connectTransport({ transportId: sendTransport.id, dtlsParameters });
-            callback();
-        } catch (error) {
-            errback(error);
-        }
-    });
-    sendTransport.on('produce', async ({ kind, rtpParameters }, callback, errback) => {
-        try {
-            const { id } = await socket.produce({ transportId: sendTransport.id, kind, rtpParameters });
-            callback({ id });
-        } catch (error) {
-            errback(error);
-        }
-    });
-    sendTransport.on('connectionstatechange', state => ui.updateTransportStatus('send', state));
-
-    // Receive Transport
-    const recvParams = await socket.createTransport();
-    recvTransport = device.createRecvTransport(recvParams);
-    recvTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
-        try {
-            await socket.connectTransport({ transportId: recvTransport.id, dtlsParameters });
-            callback();
-        } catch (error) {
-            errback(error);
-        }
-    });
-    recvTransport.on('connectionstatechange', state => ui.updateTransportStatus('recv', state));
-}
 
 async function handleStartProducing() {
     try {
@@ -105,14 +54,14 @@ async function handleStartProducing() {
         const videoTrack = localStream.getVideoTracks()[0];
         const audioTrack = localStream.getAudioTracks()[0];
 
-        videoProducer = await sendTransport.produce({ track: videoTrack });
-        audioProducer = await sendTransport.produce({ track: audioTrack });
+        videoProducer = await ctr.get_producer(videoTrack);
+        audioProducer = await ctr.get_producer(audioTrack);
 
         ui.updateProducerIds(videoProducer.id, audioProducer.id);
         ui.disableProduceButton();
 
         // Create a new group by sending groupId = 0 (or null)
-        const newGroup = await socket.setGroup({ 
+        const newGroup = await ctr.setGroup({ 
             groupId: 0, 
             video_id: videoProducer.id, 
             audio_id: audioProducer.id 
@@ -126,26 +75,18 @@ async function handleStartProducing() {
 }
 
 async function refreshGroupList() {
-    const { groups } = await socket.getGroups();
+    const { groups } = await ctr.getGroups();
     ui.renderGroups(groups, ui.elements.userIdInput.value, handleConsumeStream, handleEditGroup);
 }
 
 async function handleConsumeStream(producerId, kind, groupId) {
     try {
-        const { id, rtpParameters } = await socket.consume({
-            transportId: recvTransport.id,
-            producerId,
-        });
-
-        const consumer = await recvTransport.consume({ id, producerId, kind, rtpParameters });
-        consumers.set(id, consumer);
-
+        const consumer = await ctr.get_consumer(producerId, kind);
         const stream = new MediaStream([consumer.track]);
         const mediaElement = ui.getMediaElement(kind, groupId);
         mediaElement.srcObject = stream;
 
-        await socket.resumeConsumer({ consumerId: id });
-
+        await ctr.resumeConsumer({ consumerId: consumer.id });
     } catch (error) {
         console.error(`Failed to consume ${kind}:`, error);
     }
@@ -167,7 +108,7 @@ async function handleEditGroup(groupId) {
         return alert('You must be producing video and audio to update a group.');
     }
     try {
-        const updatedGroup = await socket.setGroup({
+        const updatedGroup = await ctr.setGroup({
             groupId, // The actual groupId to edit
             video_id: videoProducer.id,
             audio_id: audioProducer.id,
