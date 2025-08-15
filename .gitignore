@@ -3,6 +3,7 @@
 
 # Build output
 /public/bundle.js
+/public/index.html
 
 # Logs
 logs
