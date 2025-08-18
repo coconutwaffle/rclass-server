@@ -1,4 +1,4 @@
-//client.js
+//core.js
 import * as ctr from './control.js';
 import * as ui from './ui.js';
 
@@ -32,8 +32,6 @@ async function handleJoinRoom() {
 
     } catch (error) {
         console.error('Failed to join room:', error);
-        alert('Failed to join room: ' + error);
-        handleLeaveRoom();
     }
 }
 
