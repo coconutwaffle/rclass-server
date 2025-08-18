@@ -1,42 +1,63 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ko">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Mediasoup SFU Client</title>
-    <style>
-        body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; }
-        .container { border: 1px solid #ccc; padding: 10px; margin: 10px; border-radius: 5px; width: 90%; max-width: 800px; }
-        #remote-videos .video-item { border: 1px solid #eee; padding: 5px; margin-bottom: 5px; }
-        video { background-color: black; width: 100%; max-width: 320px; }
-        input, button { margin: 5px; padding: 8px; }
-    </style>
+  <meta charset="UTF-8" />
+  <title>화상 통화 데모</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { --gap: 10px; }
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; background:#fafafa; }
+    h2,h3 { margin: 6px 0; }
+    .row { display: flex; gap: var(--gap); flex-wrap: wrap; align-items: center; }
+    .col { display:flex; flex-direction:column; gap:6px; }
+    .panel { background:#fff; border:1px solid #e5e5e5; border-radius:12px; padding:14px; box-shadow:0 1px 2px rgba(0,0,0,.04); margin-bottom:16px; }
+    .panel h2 { font-size:18px; }
+    .panel h3 { font-size:16px; }
+    input, select, button { padding:8px 10px; border-radius:8px; border:1px solid #d8d8d8; background:#fff; }
+    button { cursor:pointer; }
+    button[disabled] { opacity:.55; cursor:not-allowed; }
+    .kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; padding:0 6px; border:1px solid #ddd; border-radius:6px; font-size:12px; background:#f5f5f5; }
+    .group-card { display:grid; grid-template-columns: 240px 1fr; gap:12px; }
+    .media-box { display:flex; flex-direction:column; gap:6px; }
+    video, audio { width:100%; background:#000; border-radius:10px; }
+    .meta { font-size:12px; color:#555; }
+    .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap:12px; }
+    .pill { font-size:11px; padding:2px 6px; border-radius:999px; background:#eef; border:1px solid #ccd; }
+    .danger { background:#ffecec; border-color:#ffcdcd; }
+    .ok { background:#ecffef; border-color:#bfe6c7; }
+    .toolbar { display:flex; gap:8px; flex-wrap: wrap; }
+    .hidden { display:none !important; }
+  </style>
 </head>
 <body>
-    <h1>Mediasoup SFU Client</h1>
-
-    <div class="container">
-        <h2>Connection</h2>
-        <input type="text" id="roomId" placeholder="Room ID" value="default-room">
-        <input type="text" id="userId" placeholder="User ID">
-        <button id="joinBtn">Join Room</button>
-        <button id="leaveBtn" disabled>Leave Room</button>
+  <!-- Room -->
+  <section class="panel" id="roomPanel">
+    <h2>Room</h2>
+    <div class="row">
+      <input id="roomId" placeholder="room id" value="default-room"/>
+      <input id="userId" placeholder="user id" />
+      <button id="joinBtn">Join</button>
+      <button id="leaveBtn" disabled>Leave</button>
     </div>
-
-    <div class="container">
-        <h2>My Media</h2>
-        <video id="localVideo" autoplay muted playsinline></video>
-        <br>
-        <button id="produceBtn" disabled>Start Webcam</button>
-        <div>Send Transport: <span id="sendTransportStatus">Inactive</span></div>
-        <div>Recv Transport: <span id="recvTransportStatus">Inactive</span></div>
-        <div>Video ID: <span id="videoId">N/A</span></div>
-        <div>Audio ID: <span id="audioId">N/A</span></div>
+    <div class="row meta" style="margin-top:8px">
+      <div>Send Transport: <span id="sendTransport" class="pill">idle</span></div>
+      <div>Recv Transport: <span id="recvTransport" class="pill">idle</span></div>
     </div>
+  </section>
 
-    <div class="container">
-        <h2>Remote Groups</h2>
-        <div id="remote-videos"></div>
+  <!-- Group Control -->
+  <section class="panel">
+    <h2>Group Control</h2>
+    <div class="row">
+      <button id="addGroupBtn">Add Group</button>
+      <span class="meta">※ Add Group 는 Local 그룹 생성 (core.setGroup("0", ...))</span>
     </div>
+  </section>
+
+  <!-- Groups -->
+  <section class="panel">
+    <h2>Groups</h2>
+    <div id="groupsContainer" class="grid"></div>
+  </section>
 </body>
 </html>

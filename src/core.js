@@ -1,120 +1,68 @@
 //core.js
 import * as ctr from './control.js';
-import * as ui from './ui.js';
 
-let localStream;
-let videoProducer;
-let audioProducer;
 let transports;
-
-// --- Initialize UI ---
-ui.setupInitialUI();
-
-// --- UI Event Listeners ---
-ui.elements.joinBtn.addEventListener('click', handleJoinRoom);
-ui.elements.leaveBtn.addEventListener('click', handleLeaveRoom);
-ui.elements.produceBtn.addEventListener('click', handleStartProducing);
+let producers = {};
+let consumers = {};
 
 // --- Core Functions ---
-async function handleJoinRoom() {
-    const roomId = ui.elements.roomIdInput.value;
-    const userId = ui.elements.userIdInput.value;
+export async function handleJoinRoom(roomId, userId, update_group, leave_room, updateTransportStatus) {
     if (!roomId || !userId) {
-        return alert('Room ID and User ID are required');
+        throw new Error('Room ID and User ID are required')
     }
-
-    try {
-        transports = await ctr.join_room(roomId, userId, handleSocketDisconnect, handleGroupUpdate);
-        transports.send.on('connectionstatechange', state => ui.updateTransportStatus('send', state));
-        transports.recv.on('connectionstatechange', state => ui.updateTransportStatus('recv', state));
-        ui.updateUiForJoin();
-        await refreshGroupList();
-
-    } catch (error) {
-        console.error('Failed to join room:', error);
-    }
+    transports = await ctr.join_room(roomId, userId, () => {
+        handleLeaveRoom();
+        leave_room();
+    }, update_group);
+    transports.send.on('connectionstatechange', state => updateTransportStatus('send', state));
+    transports.recv.on('connectionstatechange', state => updateTransportStatus('recv', state));
+    update_group(await ctr.getGroups());
+    return;
 }
 
-
-function handleLeaveRoom() {
+export function handleLeaveRoom() {
+    Object.entries(producers).forEach(([id, producer]) => {
+        producer.close();
+    });
+    Object.entries(consumers).forEach(([id, consumer]) => {
+        consumer.close();
+    });
     ctr.leave_room();
-    if (localStream) {
-        localStream.getTracks().forEach(track => track.stop());
-    }
-    ui.updateUiForLeave();
 }
 
 
-async function handleStartProducing() {
-    try {
-        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        ui.setLocalStream(localStream);
+export async function handleStartProducing(track) {
+    const producer = await ctr.get_producer(track);
+    producers[producer.id] = producer;
+    return producer.id;
+}
+export async function handleCloseProducing(producerId) {
+    producers[producerId].close();
+    delete producers[producerId];
+    return producerId;
+}
 
-        const videoTrack = localStream.getVideoTracks()[0];
-        const audioTrack = localStream.getAudioTracks()[0];
-
-        videoProducer = await ctr.get_producer(videoTrack);
-        audioProducer = await ctr.get_producer(audioTrack);
-
-        ui.updateProducerIds(videoProducer.id, audioProducer.id);
-        ui.disableProduceButton();
-
-        // Create a new group by sending groupId = 0 (or null)
-        const newGroup = await ctr.setGroup({ 
-            groupId: 0, 
-            video_id: videoProducer.id, 
-            audio_id: audioProducer.id 
-        });
-        console.log('New group created:', newGroup);
-
-    } catch (error) {
-        console.error('Failed to start producing:', error);
-        alert('Error starting webcam: ' + error);
+export async function handleConsumeStream(producerId, kind, groupId) {
+    const consumer = await ctr.get_consumer(producerId, kind);
+    const stream = new MediaStream([consumer.track]);
+    await ctr.resumeConsumer(consumer.id);
+    return stream;
+}
+export async function handleClose(Id) {
+    if (Id in producers) {
+        producers[Id].close();
+        delete producers[Id];
+    }
+    if (Id in consumers) {
+        consumers[Id].close();
+        delete consumers[Id];
     }
 }
-
-async function refreshGroupList() {
-    const { groups } = await ctr.getGroups();
-    ui.renderGroups(groups, ui.elements.userIdInput.value, handleConsumeStream, handleEditGroup);
+export async function setGroup(groupId, videoId, AudioId) {
+    const data = await ctr.setGroup(groupId, videoId, AudioId);
+    return data.groupId;
 }
-
-async function handleConsumeStream(producerId, kind, groupId) {
-    try {
-        const consumer = await ctr.get_consumer(producerId, kind);
-        const stream = new MediaStream([consumer.track]);
-        const mediaElement = ui.getMediaElement(kind, groupId);
-        mediaElement.srcObject = stream;
-
-        await ctr.resumeConsumer({ consumerId: consumer.id });
-    } catch (error) {
-        console.error(`Failed to consume ${kind}:`, error);
-    }
-}
-
-// --- Socket Event Handlers ---
-function handleSocketDisconnect() {
-    console.log('Socket disconnected');
-    ui.updateUiForLeave();
-}
-
-function handleGroupUpdate({ groups }) {
-    console.log('Received group update:', groups);
-    ui.renderGroups(groups, ui.elements.userIdInput.value, handleConsumeStream, handleEditGroup);
-}
-
-async function handleEditGroup(groupId) {
-    if (!videoProducer || !audioProducer) {
-        return alert('You must be producing video and audio to update a group.');
-    }
-    try {
-        const updatedGroup = await ctr.setGroup({
-            groupId, // The actual groupId to edit
-            video_id: videoProducer.id,
-            audio_id: audioProducer.id,
-        });
-        console.log(`Successfully edited group ${groupId}:`, updatedGroup);
-    } catch (error) {
-        console.error('Failed to edit group:', error);
-        alert('Failed to edit group: ' + error);
-    }
+export async function del_group(groupId) {
+    const data = await ctr.del_group(groupId);
+    return data.deletedGroupId;
 }

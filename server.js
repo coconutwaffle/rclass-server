@@ -178,13 +178,13 @@ io.on('connection', (socket) => {
         if (!room || !clientData) {
             return callback({ result: false, data: 'Not in a room' });
         }
-
+        console.log(`groupId: ${groupId}, video_id: ${video_id}, audio_id: ${audio_id}`);
         // Validate IDs and set to "NULL" if invalid
         const final_video_id = clientData.producers.has(video_id) ? video_id : "NULL";
         const final_audio_id = clientData.producers.has(audio_id) ? audio_id : "NULL";
 
         // Case 1: Create a new group if groupId is 0 or not provided
-        if (!groupId) {
+        if (groupId == 0 || !groupId) {
             const newGroupId = room.nextGroupId++;
             const groupData = {
                 groupId: newGroupId,
@@ -197,7 +197,7 @@ io.on('connection', (socket) => {
             clientData.groups.set(newGroupId, groupData);
 
             console.log(`Group ${newGroupId} CREATED for client ${clientId}:`, groupData);
-            io.to(roomId).emit('update_groups', { groups: Array.from(room.groups.entries()) });
+            socket.to(roomId).emit('update_groups', { groups: Array.from(room.groups.entries()) });
             callback({ result: true, data: groupData });
         }
         // Case 2: Edit an existing group
@@ -221,11 +221,16 @@ io.on('connection', (socket) => {
             clientData.groups.set(groupId, updatedGroupData); // Also update the client's own map
 
             console.log(`Group ${groupId} EDITED by client ${clientId}:`, updatedGroupData);
-            io.to(roomId).emit('update_groups', { groups: Array.from(room.groups.entries()) });
+            socket.to(roomId).emit('update_groups', { groups: Array.from(room.groups.entries()) });
             callback({ result: true, data: updatedGroupData });
         }
     });
-
+    socket.on('get_groups', (data, callback) => {
+        const room = rooms[roomId];
+        const clientData = room.clients.get(clientId);
+        data = {groups: Array.from(room.groups.entries())};
+        callback({ result: true, data });
+    })
     socket.on('del_group', (data, callback) => {
         const { groupId } = data;
         const room = rooms[roomId];
@@ -252,7 +257,7 @@ io.on('connection', (socket) => {
         console.log(`Group ${groupId} DELETED by client ${clientId}`);
 
         // Notify everyone in the room
-        io.to(roomId).emit('update_groups', { groups: Array.from(room.groups.entries()) });
+        socket.to(roomId).emit('update_groups', { groups: Array.from(room.groups.entries()) });
 
         callback({ result: true, data: { deletedGroupId: groupId } });
     });
@@ -340,7 +345,7 @@ io.on('connection', (socket) => {
         room.clients.delete(clientId);
         console.log(`Client ${clientId} left room ${roomId}`);
 
-        io.to(roomId).emit('update_groups', { groups: Array.from(room.groups.entries()) });
+        socket.to(roomId).emit('update_groups', { groups: Array.from(room.groups.entries()) });
 
         if (room.clients.size === 0) {
             console.log(`Room ${roomId} is empty, closing router.`);

@@ -31,7 +31,6 @@ export function connectToServer(roomId, userId, onDisconnect, onUpdateGroups) {
 
     return new Promise((resolve, reject) => {
         socket.on('connect', async () => {
-            console.log('Socket connected');
             try {
                 const data = await request('join_room', { roomId, clientId: userId });
                 socket.on('disconnect', onDisconnect);
@@ -48,8 +47,7 @@ export function connectToServer(roomId, userId, onDisconnect, onUpdateGroups) {
     });
 }
 
-export function leave_room()
-{
+export function leave_room() {
     if (socket) {
         socket.disconnect();
         socket = null;
@@ -58,8 +56,7 @@ export function leave_room()
     if (recvTransport) recvTransport.close();
 }
 
-export async function join_room(roomId, userId, handleSocketDisconnect, handleGroupUpdate)
-{
+export async function join_room(roomId, userId, handleSocketDisconnect, handleGroupUpdate) {
     const { rtpCapabilities } = await connectToServer(
         roomId,
         userId,
@@ -108,30 +105,31 @@ export async function createTransports() {
         }
     });
 
-    return {'send':sendTransport, 'recv':recvTransport};
+    return { 'send': sendTransport, 'recv': recvTransport };
 }
-export async function get_producer(track_toprocude)
-{
-    return sendTransport.produce({track:track_toprocude});
+export async function get_producer(track_toprocude) {
+    return sendTransport.produce({ track: track_toprocude });
 }
 
-export async function get_consumer(producerId, kind)
-{
-        const { id, rtpParameters } = await consume({
-            transportId: recvTransport.id,
-            producerId,
-        });
+export async function get_consumer(producerId, kind) {
+    const { id, rtpParameters } = await consume( producerId, recvTransport.id);
 
-        const consumer = await recvTransport.consume({ id, producerId, kind, rtpParameters });
-        return consumer;
+    const consumer = await recvTransport.consume({ id, producerId, kind, rtpParameters });
+    return consumer;
 }
 
 export const storeRtpCapabilities = (data) => request('store_rtp_capabilities', data);
 export const createTransport = () => request('create_transport');
 export const connectTransport = (data) => request('connect_transport', data);
 export const produce = (data) => request('produce', data);
-export const setGroup = (data) => request('set_group', data);
+export const setGroup = (gid, vid, aid) => request('set_group', {
+        groupId: gid,
+        video_id: vid,
+        audio_id: aid
+    });
 export const getGroups = () => request('get_groups');
-export const consume = (data) => request('consume', data);
-export const resumeConsumer = (data) => request('resume_consumer', data);
-export const del_group = (data) => request('del_group', data);
+export const consume = (pid, tid) => request('consume', { 
+    producerId: pid, 
+    transportId: tid });
+export const resumeConsumer = (cid) => request('resume_consumer', {consumerId:cid});
+export const del_group = (gid) => request('del_group', {groupId:gid});
