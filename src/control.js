@@ -134,3 +134,4 @@ export const setGroup = (data) => request('set_group', data);
 export const getGroups = () => request('get_groups');
 export const consume = (data) => request('consume', data);
 export const resumeConsumer = (data) => request('resume_consumer', data);
+export const del_group = (data) => request('del_group', data);

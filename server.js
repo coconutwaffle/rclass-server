@@ -226,12 +226,6 @@ io.on('connection', (socket) => {
         }
     });
 
-    socket.on('get_groups', (data, callback) => {
-        const room = rooms[roomId];
-        if (!room) return callback({ result: false, data: 'Not in a room' });
-        callback({ result: true, data: { groups: Array.from(room.groups.entries()) } });
-    });
-
     socket.on('del_group', (data, callback) => {
         const { groupId } = data;
         const room = rooms[roomId];
