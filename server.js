@@ -79,7 +79,7 @@ io.on('connection', (socket) => {
         if (!room) {
             const worker = getMediasoupWorker();
             const router = await worker.createRouter({ mediaCodecs: config.mediasoup.router.mediaCodecs });
-            room = { router, clients: new Map(), groups: new Map(), nextGroupId: 1 };
+            room = { router, clients: new Map(), groups: new Map(), nextGroupId: 1, chat_log: []};
             rooms[roomId] = room;
             console.log(`Room ${roomId} created.`);
         }
@@ -325,6 +325,71 @@ io.on('connection', (socket) => {
         callback({ result: true, data: null });
     });
 
+    socket.on("chat_send", async (data, callback) => {
+        try {
+            const room = rooms[roomId];
+            if (!room) return callback({ result: false, data: 'Not in a room' });
+
+            // payload 검증/정규화
+            const msgText = String(data?.msg ?? "").trim();
+            const mode = data?.mode === "SECRET" ? "SECRET" : "ALL";
+            const sendTo = Array.isArray(data?.send_to) ? data.send_to : [];
+
+            if (!msgText) return callback?.({ result: false, error: "empty message" });
+
+            const ts = Date.now();
+            const chat = {
+                ts,
+                msg: msgText,
+                mode,                // "ALL" | "SECRET"
+                send_to: sendTo,     // socket.id 배열 가정
+                from: clientId,     // 보낸 사람
+            };
+
+            if (mode === "ALL") {
+                // 같은 방에만 방송
+                io.to(roomId).emit("chat_message", chat);
+            } else {
+                // SECRET: 수신자 + 발신자에게만 전송
+                const targets = new Set([...sendTo, clientId]);
+                for (const cid of targets) {
+                    room.clients[cid].socket.emit("chat_message", chat);
+                }
+            }
+
+            room.chat_log.push(chat);
+            callback?.({ result: true, data: null });
+        } catch (err) {
+            callback?.({ result: false, data: "internal_error" });
+        }
+    });
+
+    // 히스토리 요청
+    socket.on("chat_history", async (_data, callback) => {
+        try {
+            const room = rooms[roomId];
+            if (!room) return callback({ result: false, data: 'Not in a room' });
+            const res = [];
+
+            for (const m of room.chat_log) {
+                if (m.mode === "ALL") {
+                    res.push(m);
+                } else if (m.mode === "SECRET") {
+                    // 수신자이거나 발신자면 볼 수 있음
+                    if (m.from === clientId || (Array.isArray(m.send_to) && m.send_to.includes(clientId))) {
+                        res.push(m);
+                    }
+                }
+            }
+
+            // 보너스: 시간순 정렬 보장(이미 ts 순으로 push되면 필요 없지만 안전하게)
+            res.sort((a, b) => a.ts - b.ts);
+
+            callback?.({ result: true, data: res });
+        } catch (err) {
+            callback?.({ result: false, error: "internal_error" });
+        }
+    });
 
     socket.on('disconnect', () => {
         console.log(`Client disconnected: ${socket.id}`);
