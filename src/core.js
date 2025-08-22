@@ -1,239 +1,283 @@
-//core.js
+// core.js (refactored)
 
-// --- From control.js ---
 import { io } from 'socket.io-client';
 import { Device } from 'mediasoup-client';
 
-let sendTransport;
-let recvTransport;
-let device;
-let socket;
-let local_groups = [];
-// Promise-based request wrapper
-function request(type, data = {}) {
+/**
+ * @typedef {{ result: boolean, data: any }} ServerResponse
+ * @typedef {'send'|'recv'} TransportKind
+ */
+
+export class RoomClient {
+  /** @type {ReturnType<typeof io>|null} */
+  #socket = null;
+  /** @type {Device|null} */
+  #device = null;
+  /** @type {import('mediasoup-client/lib/Transport').Transport|null} */
+  #sendTransport = null;
+  /** @type {import('mediasoup-client/lib/Transport').Transport|null} */
+  #recvTransport = null;
+  /** @type {Map<string, import('mediasoup-client/lib/Producer').Producer>} */
+  #producers = new Map();
+  /** @type {Map<string, import('mediasoup-client/lib/Consumer').Consumer>} */
+  #consumers = new Map();
+  /** @type {Set<number>} */
+  #localGroups = new Set();
+
+  /** 외부로 전달할 콜백들 */
+  /** @type {(reason?: any)=>void} */
+  onDisconnect = () => {};
+  /** @type {(groups: any)=>void} */
+  onGroupsUpdated = () => {};
+  /** @type {(kind: TransportKind, state: string)=>void} */
+  onTransportState = () => {};
+
+  /** 내부 공용 요청 래퍼(타임아웃 포함) */
+  #request(type, data = {}, timeoutMs = 8000) {
     return new Promise((resolve, reject) => {
-        if (!socket) return reject('No socket connection.');
-        socket.emit(type, data, (response) => {
-            if (response.result) {
-                resolve(response.data);
-            } else {
-                console.error('Request failed:', type, response.data);
-                reject(response.data);
-            }
-        });
-    });
-}
-
-function connectToServer(roomId, userId, onDisconnect, onUpdateGroups) {
-    socket = io({
-        path: '/socket.io',
-        transports: ['websocket'],
-    });
-
-    return new Promise((resolve, reject) => {
-        socket.on('connect', async () => {
-            try {
-                const data = await request('join_room', { roomId, clientId: userId });
-                socket.on('disconnect', onDisconnect);
-                socket.on('update_groups', onUpdateGroups);
-                resolve(data);
-            } catch (error) {
-                reject(error);
-            }
-        });
-
-        socket.on('connect_error', (error) => {
-            reject(error);
-        });
-    });
-}
-
-export function leave_room() {
-    if (socket) {
-        socket.disconnect();
-        socket = null;
-    }
-    if (sendTransport) sendTransport.close();
-    if (recvTransport) recvTransport.close();
-    while(local_groups.length > 0)
-    {
-        id = local_groups.pop();
-        try{
-            del_group(id);
+      if (!this.#socket) return reject(new Error('No socket connection'));
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          reject(new Error(`Request timeout: ${type}`));
         }
-        catch(err){}
-    }
-}
+      }, timeoutMs);
 
-async function join_room_internal(roomId, userId, handleSocketDisconnect, handleGroupUpdate) {
-    const { rtpCapabilities } = await connectToServer(
-        roomId,
-        userId,
-        handleSocketDisconnect,
-        handleGroupUpdate
-    );
-
-    device = new Device();
-    await device.load({ routerRtpCapabilities: rtpCapabilities });
-
-    await storeRtpCapabilities({ rtpCapabilities: device.rtpCapabilities });
-
-    return createTransports();
-}
-
-async function createTransports() {
-    // Send Transport
-    const sendParams = await createTransport();
-    sendTransport = device.createSendTransport(sendParams);
-    sendTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
-        try {
-            await connectTransport({ transportId: sendTransport.id, dtlsParameters });
-            callback();
-        } catch (error) {
-            errback(error);
-        }
+      this.#socket.emit(type, data, /** @param {ServerResponse} res */ (res) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (res?.result) resolve(res.data);
+        else reject(new Error(res?.data || `Request failed: ${type}`));
+      });
     });
-    sendTransport.on('produce', async ({ kind, rtpParameters }, callback, errback) => {
-        try {
-            const { id } = await produce({ transportId: sendTransport.id, kind, rtpParameters });
-            callback({ id });
-        } catch (error) {
-            errback(error);
-        }
+  }
+
+  /** 소켓 연결 및 룸 조인 */
+  async join({ roomId, userId }) {
+    if (!roomId || !userId) throw new Error('Room ID and User ID are required');
+
+    // 1) 소켓 연결
+    this.#socket = io({
+      path: '/socket.io',
+      transports: ['websocket'],
     });
 
-    // Receive Transport
-    const recvParams = await createTransport();
-    recvTransport = device.createRecvTransport(recvParams);
-    recvTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
-        try {
-            await connectTransport({ transportId: recvTransport.id, dtlsParameters });
-            callback();
-        } catch (error) {
-            errback(error);
-        }
+    await new Promise((resolve, reject) => {
+      if (!this.#socket) return reject(new Error('Socket not created'));
+      this.#socket.on('connect', resolve);
+      this.#socket.on('connect_error', reject);
     });
 
-    return { 'send': sendTransport, 'recv': recvTransport };
-}
-async function get_producer(track_toprocude) {
-    return sendTransport.produce({ track: track_toprocude });
-}
+    // 2) 서버에 조인
+    const { rtpCapabilities } = await this.#request('join_room', { roomId, clientId: userId });
 
-async function get_consumer(producerId, kind) {
-    const { id, rtpParameters } = await consume( producerId, recvTransport.id);
+    // 3) 이벤트 바인딩
+    this.#socket.on('disconnect', (reason) => this.onDisconnect?.(reason));
+    this.#socket.on('update_groups', (payload) => this.onGroupsUpdated?.(payload));
 
-    const consumer = await recvTransport.consume({ id, producerId, kind, rtpParameters });
-    return consumer;
-}
+    // 4) Device 준비
+    this.#device = new Device();
+    await this.#device.load({ routerRtpCapabilities: rtpCapabilities });
 
-const storeRtpCapabilities = (data) => request('store_rtp_capabilities', data);
-const createTransport = () => request('create_transport');
-const connectTransport = (data) => request('connect_transport', data);
-const produce = (data) => request('produce', data);
-const consume = (pid, tid) => request('consume', { 
-    producerId: pid, 
-    transportId: tid });
-const resumeConsumer = (cid) => request('resume_consumer', {consumerId:cid});
+    // 5) rtpCapabilities 서버에 저장
+    await this.#request('store_rtp_capabilities', { rtpCapabilities: this.#device.rtpCapabilities });
 
-export async function chat_send(msg, mode, send_to)
-{
-    try {
-        res = await request('chat_send', {msg, mode, send_to});
-        return res
-    } catch(err)
-    {
-        consol.trace(`[chat_send] err: ${err}`)
-        throw err;
+    // 6) 트랜스포트 생성
+    await this.#createTransports();
+
+    // 7) 초기 그룹 상태 fetch
+    const groups = await this.getGroups();
+    this.onGroupsUpdated?.(groups);
+  }
+
+  /** 트랜스포트 생성/연결 공통 */
+  async #createTransports() {
+    if (!this.#device) throw new Error('Device not ready');
+
+    // --- Send Transport ---
+    const sendParams = await this.#request('create_transport');
+    this.#sendTransport = this.#device.createSendTransport(sendParams);
+    this.#sendTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
+      try {
+        await this.#request('connect_transport', { transportId: this.#sendTransport.id, dtlsParameters });
+        callback();
+      } catch (err) {
+        errback(err);
+      }
+    });
+    this.#sendTransport.on('produce', async ({ kind, rtpParameters }, callback, errback) => {
+      try {
+        const { id } = await this.#request('produce', { transportId: this.#sendTransport.id, kind, rtpParameters });
+        callback({ id });
+      } catch (err) {
+        errback(err);
+      }
+    });
+    this.#sendTransport.on('connectionstatechange', (state) => this.onTransportState?.('send', state));
+
+    // --- Receive Transport ---
+    const recvParams = await this.#request('create_transport');
+    this.#recvTransport = this.#device.createRecvTransport(recvParams);
+    this.#recvTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
+      try {
+        await this.#request('connect_transport', { transportId: this.#recvTransport.id, dtlsParameters });
+        callback();
+      } catch (err) {
+        errback(err);
+      }
+    });
+    this.#recvTransport.on('connectionstatechange', (state) => this.onTransportState?.('recv', state));
+  }
+
+  /** 프로듀서 시작 */
+  async startProducing(track) {
+    if (!this.#sendTransport) throw new Error('Send transport not ready');
+    const producer = await this.#sendTransport.produce({ track });
+    this.#producers.set(producer.id, producer);
+    return producer.id;
+  }
+
+  /** 프로듀서 종료 */
+  stopProducing(producerId) {
+    const p = this.#producers.get(producerId);
+    if (p) {
+      p.close();
+      this.#producers.delete(producerId);
     }
-}
-export async function chat_history()
-{
-    try{
-        res = await request('chat_history');
-        return res;
-    } catch(err)
-    {
-        consol.trace(`[chat_history] err: ${err}`)
-        throw err;
+  }
+
+  /** 컨슈머 생성 및 재생 */
+  async consume(producerId, kind) {
+    if (!this.#recvTransport) throw new Error('Recv transport not ready');
+
+    const { id, rtpParameters } = await this.#request('consume', {
+      producerId,
+      transportId: this.#recvTransport.id,
+    });
+
+    const consumer = await this.#recvTransport.consume({ id, producerId, kind, rtpParameters });
+    this.#consumers.set(consumer.id, consumer);
+
+    await this.#request('resume_consumer', { consumerId: consumer.id });
+
+    const stream = new MediaStream([consumer.track]);
+    return { consumerId: consumer.id, stream };
+  }
+
+  /** 컨슈머 종료 */
+  closeConsumer(id) {
+    const c = this.#consumers.get(id);
+    if (c) {
+      c.close();
+      this.#consumers.delete(id);
     }
+  }
+
+  /** 현재 연결 전체 종료 */
+  async leave() {
+    // 1) 서버 리소스 먼저 정리(그룹)
+    for (const id of Array.from(this.#localGroups)) {
+      try { await this.delGroup(id); } catch {}
+    }
+    this.#localGroups.clear();
+
+    // 2) 로컬 리소스 종료
+    for (const [, p] of this.#producers) p.close();
+    for (const [, c] of this.#consumers) c.close();
+    this.#producers.clear();
+    this.#consumers.clear();
+
+    if (this.#sendTransport) { this.#sendTransport.close(); this.#sendTransport = null; }
+    if (this.#recvTransport) { this.#recvTransport.close(); this.#recvTransport = null; }
+
+    // 3) 소켓 종료 (마지막)
+    if (this.#socket) {
+      this.#socket.disconnect();
+      this.#socket = null;
+    }
+    this.#device = null;
+  }
+
+  // --------- 채팅 ----------
+  chatSend(msg, mode, send_to) {
+    return this.#request('chat_send', { msg, mode, send_to });
+  }
+  chatHistory(params) { // {room_id, limit, cursor}
+    return this.#request('chat_history', params);
+  }
+
+  // --------- 그룹 ----------
+  async setGroup(groupId, videoId, audioId) {
+    const data = await this.#request('set_group', {
+      groupId,
+      video_id: videoId,
+      audio_id: audioId
+    });
+    const newId = data.groupId;
+    if (typeof newId === 'number') this.#localGroups.add(newId);
+    return newId;
+  }
+  async delGroup(groupId) {
+    const data = await this.#request('del_group', { groupId });
+    this.#localGroups.delete(groupId);
+    return data.deletedGroupId;
+  }
+  getGroups() {
+    return this.#request('get_groups');
+  }
+  getOnlineUsers() {
+    return this.#request('get_online_users');
+  }
 }
-// --- Original core.js ---
 
-let transports;
-let producers = {};
-let consumers = {};
+/* ---------------------------
+ * 기존 handle* API와의 호환 래퍼
+ * (UI 레이어가 바뀌지 않도록 유지)
+ * --------------------------*/
 
-// --- Core Functions ---
+let _client/** @type {RoomClient|null} */ = null;
+
 export async function handleJoinRoom(roomId, userId, update_group, leave_room_callback, updateTransportStatus) {
-    if (!roomId || !userId) {
-        throw new Error('Room ID and User ID are required')
-    }
-    transports = await join_room_internal(roomId, userId, () => {
-        handleLeaveRoom();
-        leave_room_callback();
-    }, update_group);
-    transports.send.on('connectionstatechange', state => updateTransportStatus('send', state));
-    transports.recv.on('connectionstatechange', state => updateTransportStatus('recv', state));
-    update_group(await getGroups());
-    return;
+  _client = new RoomClient();
+  _client.onDisconnect = leave_room_callback;
+  _client.onGroupsUpdated = update_group;
+  _client.onTransportState = updateTransportStatus;
+  await _client.join({ roomId, userId });
 }
 
 export function handleLeaveRoom() {
-    Object.entries(producers).forEach(([id, producer]) => {
-        producer.close();
-    });
-    Object.entries(consumers).forEach(([id, consumer]) => {
-        consumer.close();
-    });
-    leave_room();
+  if (_client) _client.leave();
+  _client = null;
 }
 
-
-export async function handleStartProducing(track) {
-    const producer = await get_producer(track);
-    producers[producer.id] = producer;
-    return producer.id;
-}
-export async function handleCloseProducing(producerId) {
-    producers[producerId].close();
-    delete producers[producerId];
-    return producerId;
+export function handleStartProducing(track) {
+  if (!_client) throw new Error('Not joined');
+  return _client.startProducing(track);
 }
 
-export async function handleConsumeStream(producerId, kind, groupId) {
-    const consumer = await get_consumer(producerId, kind);
-    const stream = new MediaStream([consumer.track]);
-    await resumeConsumer(consumer.id);
-    return stream;
-}
-export async function handleClose(Id) {
-    if (Id in producers) {
-        producers[Id].close();
-        delete producers[Id];
-    }
-    if (Id in consumers) {
-        consumers[Id].close();
-        delete consumers[Id];
-    }
-}
-export async function setGroup(groupId, videoId, AudioId) {
-    const data = await request('set_group', {
-        groupId: groupId,
-        video_id: videoId,
-        audio_id: AudioId
-    });
-    if(groupId === 0)
-        {
-            local_groups.push(groupId);
-        } 
-    return data.groupId;
-}
-export async function del_group(groupId) {
-    const data = await request('del_group', {groupId:groupId});
-    return data.deletedGroupId;
+export function handleCloseProducing(producerId) {
+  if (!_client) throw new Error('Not joined');
+  _client.stopProducing(producerId);
+  return producerId;
 }
 
-export async function getGroups() {
-    return await request('get_groups');
+export async function handleConsumeStream(producerId, kind /*, groupId UNUSED */) {
+  if (!_client) throw new Error('Not joined');
+  const { stream } = await _client.consume(producerId, kind);
+  return stream;
 }
+
+export function handleClose(id) {
+  if (!_client) return;
+  _client.stopProducing(id);
+  _client.closeConsumer(id);
+}
+
+export function setGroup(groupId, videoId, audioId) { if (!_client) throw new Error('Not joined'); return _client.setGroup(groupId, videoId, audioId); }
+export function del_group(groupId) { if (!_client) throw new Error('Not joined'); return _client.delGroup(groupId); }
+export function getGroups() { if (!_client) throw new Error('Not joined'); return _client.getGroups(); }
+export function getOnlineUsers() { if (!_client) throw new Error('Not joined'); return _client.getOnlineUsers(); }
+export function chat_send(msg, mode, send_to) { if (!_client) throw new Error('Not joined'); return _client.chatSend(msg, mode, send_to); }
+export function chat_history(params) { if (!_client) throw new Error('Not joined'); return _client.chatHistory(params); }

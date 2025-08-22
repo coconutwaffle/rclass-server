@@ -6,6 +6,7 @@ const express = require('express');
 const socketIO = require('socket.io');
 const mediasoup = require('mediasoup');
 const config = require('./src/config');
+const crypto = require("crypto");
 
 const app = express();
 app.use(express.static(__dirname + '/public'));
@@ -25,6 +26,15 @@ httpsServer.listen(config.port, () => {
 let workers = [];
 let nextWorkerIdx = 0;
 const rooms = {}; // { [roomId]: { router, clients: Map<clientId, clientData> , groups: Map<groupId, groupData>} }
+
+
+function makeMsgId(ts, content, from) {
+    const hash = crypto.createHash("sha1")
+        .update(content + from)
+        .digest("hex")
+        .slice(0, 8);
+    return `${ts}-${hash}`;
+}
 
 async function runMediasoupWorkers() {
     const numWorkers = os.cpus().length;
@@ -79,7 +89,7 @@ io.on('connection', (socket) => {
         if (!room) {
             const worker = getMediasoupWorker();
             const router = await worker.createRouter({ mediaCodecs: config.mediasoup.router.mediaCodecs });
-            room = { router, clients: new Map(), groups: new Map(), nextGroupId: 1, chat_log: []};
+            room = { router, clients: new Map(), groups: new Map(), nextGroupId: 1, chat_log: [] };
             rooms[roomId] = room;
             console.log(`Room ${roomId} created.`);
         }
@@ -108,7 +118,7 @@ io.on('connection', (socket) => {
                 ...config.webRtcTransport,
                 listenIps: config.webRtcTransport.listenIps.map(ip => ({ ...ip, announcedIp: ip.announcedIp || config.domain })),
             });
-            
+
             const clientData = room.clients.get(clientId);
             clientData.transports.set(transport.id, transport);
 
@@ -157,7 +167,7 @@ io.on('connection', (socket) => {
         try {
             const producer = await transport.produce({ kind, rtpParameters });
             clientData.producers.set(producer.id, producer);
-            
+
             producer.on('transportclose', () => {
                 console.log(`Producer's transport closed: ${producer.id}`);
                 clientData.producers.delete(producer.id);
@@ -228,7 +238,7 @@ io.on('connection', (socket) => {
     socket.on('get_groups', (data, callback) => {
         const room = rooms[roomId];
         const clientData = room.clients.get(clientId);
-        data = {groups: Array.from(room.groups.entries())};
+        data = { groups: Array.from(room.groups.entries()) };
         callback({ result: true, data });
     })
     socket.on('del_group', (data, callback) => {
@@ -304,7 +314,7 @@ io.on('connection', (socket) => {
             callback({ result: false, data: error.message });
         }
     });
-    
+
     socket.on('store_rtp_capabilities', (data, callback) => {
         const room = rooms[roomId];
         const clientData = room.clients.get(clientId);
@@ -319,7 +329,7 @@ io.on('connection', (socket) => {
         const room = rooms[roomId];
         const clientData = room.clients.get(clientId);
         const consumer = clientData.consumers.get(consumerId);
-        if(consumer) {
+        if (consumer) {
             await consumer.resume();
         }
         callback({ result: true, data: null });
@@ -328,69 +338,80 @@ io.on('connection', (socket) => {
     socket.on("chat_send", async (data, callback) => {
         try {
             const room = rooms[roomId];
-            if (!room) return callback({ result: false, data: 'Not in a room' });
+            if (!room) return callback?.({ result: false, data: "Not in a room" });
 
-            // payload 검증/정규화
             const msgText = String(data?.msg ?? "").trim();
+            if (!msgText) return callback?.({ result: false, data: "empty message" });
+
             const mode = data?.mode === "SECRET" ? "SECRET" : "ALL";
             const sendTo = Array.isArray(data?.send_to) ? data.send_to : [];
 
-            if (!msgText) return callback?.({ result: false, error: "empty message" });
-
             const ts = Date.now();
-            const chat = {
-                ts,
-                msg: msgText,
-                mode,                // "ALL" | "SECRET"
-                send_to: sendTo,     // socket.id 배열 가정
-                from: clientId,     // 보낸 사람
-            };
+            const msgId = makeMsgId(ts, msgText, clientId);
 
+            let recipients = [];
             if (mode === "ALL") {
-                // 같은 방에만 방송
-                io.to(roomId).emit("chat_message", chat);
+                io.to(roomId).emit("chat_message", { msgId, ts, msg: msgText, mode, send_to: [], from: clientId });
             } else {
-                // SECRET: 수신자 + 발신자에게만 전송
-                const targets = new Set([...sendTo, clientId]);
-                for (const cid of targets) {
-                    room.clients[cid].socket.emit("chat_message", chat);
+                const validTargets = new Set([clientId]);
+                for (const cid of sendTo) if (room.clients.has(cid)) validTargets.add(cid);
+                if (validTargets.size === 1) {
+                    return callback?.({ result: false, data: "no valid recipients" });
                 }
+                for (const cid of validTargets) {
+                    const entry = room.clients.get(cid);
+                    if (entry?.socket) entry.socket.emit("chat_message", {
+                        msgId, ts, msg: msgText, mode, send_to: [...validTargets].filter(v => v !== clientId), from: clientId
+                    });
+                }
+                recipients = [...validTargets].filter(v => v !== clientId);
             }
 
+            const chat = { msgId, ts, msg: msgText, mode, send_to: mode === "ALL" ? [] : recipients, from: clientId };
             room.chat_log.push(chat);
-            callback?.({ result: true, data: null });
+
+            callback?.({ result: true, data: { msgId, ts } });
         } catch (err) {
             callback?.({ result: false, data: "internal_error" });
         }
     });
 
+
     // 히스토리 요청
-    socket.on("chat_history", async (_data, callback) => {
+    socket.on("chat_history", async (data, callback) => {
         try {
             const room = rooms[roomId];
-            if (!room) return callback({ result: false, data: 'Not in a room' });
-            const res = [];
+            if (!room) return callback?.({ result: false, data: "Not in a room" });
 
-            for (const m of room.chat_log) {
-                if (m.mode === "ALL") {
-                    res.push(m);
-                } else if (m.mode === "SECRET") {
-                    // 수신자이거나 발신자면 볼 수 있음
-                    if (m.from === clientId || (Array.isArray(m.send_to) && m.send_to.includes(clientId))) {
-                        res.push(m);
-                    }
+            const { limit = 50, before_ts, after_ts } = data || {};
+            let list = room.chat_log.filter(m => {
+                if (m.mode === "ALL") return true;
+                if (m.mode === "SECRET") {
+                    return m.from === clientId || (Array.isArray(m.send_to) && m.send_to.includes(clientId));
                 }
-            }
+                return false;
+            });
 
-            // 보너스: 시간순 정렬 보장(이미 ts 순으로 push되면 필요 없지만 안전하게)
-            res.sort((a, b) => a.ts - b.ts);
+            if (before_ts) list = list.filter(m => m.ts < before_ts);
+            if (after_ts) list = list.filter(m => m.ts > after_ts);
 
-            callback?.({ result: true, data: res });
+            list.sort((a, b) => a.ts - b.ts);
+            const slice = list.slice(-limit);
+            const has_more = list.length > slice.length;
+            const next_cursor = slice.length ? slice[0].ts : null;
+
+            callback?.({ result: true, data: { messages: slice, has_more, next_cursor } });
         } catch (err) {
-            callback?.({ result: false, error: "internal_error" });
+            callback?.({ result: false, data: "internal_error" });
         }
     });
 
+    socket.on('get_online_users', (data, callback) => {
+        const room = rooms[roomId];
+        const clientData = room.clients.get(clientId);
+        if (!room || !clientData) return callback({ result: false, data: 'Not in a room' });
+        callback({ result: true, data: Array.from(room.clients.keys()) })
+    });
     socket.on('disconnect', () => {
         console.log(`Client disconnected: ${socket.id}`);
         if (!roomId || !clientId) return;
