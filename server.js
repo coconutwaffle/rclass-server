@@ -17,7 +17,7 @@ const httpsOptions = {
     cert: fs.readFileSync(__dirname + '/certs/fullchain.pem'),
 };
 const httpsServer = https.createServer(httpsOptions, app);
-const io = socketIO(httpsServer, {allowEIO3: true});
+const io = socketIO(httpsServer, { allowEIO3: true });
 
 httpsServer.listen(config.port, () => {
     console.log(`Server is running on https://${config.domain}:${config.port}`);
@@ -118,7 +118,7 @@ io.on('connection', (socket) => {
             const transport = await room.router.createWebRtcTransport({
                 ...config.webRtcTransport,
                 listenIps: config.webRtcTransport.listenIps.map(ip => ({ ...ip, announcedIp: ip.announcedIp || config.domain })),
-                enableSctp: true, 
+                enableSctp: true,
                 enableUdp: true,
                 enableTcp: true,
             });
@@ -126,12 +126,12 @@ io.on('connection', (socket) => {
             const clientData = room.clients.get(clientId);
             clientData.transports.set(transport.id, transport);
             const res_k = {
-                    id: transport.id,
-                    iceParameters: transport.iceParameters,
-                    iceCandidates: transport.iceCandidates,
-                    dtlsParameters: transport.dtlsParameters,
-                    sctpParameters: transport.sctpParameters,
-                }
+                id: transport.id,
+                iceParameters: transport.iceParameters,
+                iceCandidates: transport.iceCandidates,
+                dtlsParameters: transport.dtlsParameters,
+                sctpParameters: transport.sctpParameters,
+            }
             callback({
                 result: true,
                 data: res_k
@@ -356,24 +356,56 @@ io.on('connection', (socket) => {
 
             let recipients = [];
             if (mode === "ALL") {
-                io.to(roomId).emit("chat_message", { msgId, ts, msg: msgText, mode, send_to: [], from: clientId });
+                // ALL이면 recipients는 자기자신 포함 (사실 의미 없음, send_to는 빈 배열로 저장)
+                recipients = [clientId];
+
+                const chat = {
+                    msgId,
+                    ts,
+                    msg: msgText,
+                    mode,
+                    send_to: [], // ALL은 send_to 비워둠
+                    from: clientId,
+                };
+
+                // 로그 먼저 기록
+                room.chat_log.push(chat);
+
+                // 전체 브로드캐스트
+                io.to(roomId).emit("chat_message", chat);
+
             } else {
                 const validTargets = new Set([clientId]);
-                for (const cid of sendTo) if (room.clients.has(cid)) validTargets.add(cid);
+                for (const cid of sendTo) {
+                    if (room.clients.has(cid)) validTargets.add(cid);
+                }
+
                 if (validTargets.size === 1) {
                     return callback?.({ result: false, data: "no valid recipients" });
                 }
-                for (const cid of validTargets) {
-                    const entry = room.clients.get(cid);
-                    if (entry?.socket) entry.socket.emit("chat_message", {
-                        msgId, ts, msg: msgText, mode, send_to: [...validTargets].filter(v => v !== clientId), from: clientId
-                    });
-                }
-                recipients = [...validTargets].filter(v => v !== clientId);
-            }
 
-            const chat = { msgId, ts, msg: msgText, mode, send_to: mode === "ALL" ? [] : recipients, from: clientId };
-            room.chat_log.push(chat);
+                // recipients = 자기 자신 + 유효한 대상 전체
+                recipients = [...validTargets];
+
+                const chat = {
+                    msgId,
+                    ts,
+                    msg: msgText,
+                    mode,
+                    send_to: recipients, // 로그에는 자기 자신도 포함
+                    from: clientId,
+                };
+
+                // 로그를 우선 저장
+                room.chat_log.push(chat);
+
+                // 실제 전송은 자기 자신 제외
+                // recipients = recipients.filter(v => v !== clientId);
+                for (const cid of recipients) {
+                    const entry = room.clients.get(cid);
+                    entry?.socket?.emit("chat_message", chat);
+                }
+            }
 
             callback?.({ result: true, data: { msgId, ts } });
         } catch (err) {

@@ -69,8 +69,6 @@ async function sendChatMessage() {
     try {
         await core.chat_send(msg, 'ALL', []);
         input.value = '';
-        // 메시지 전송 후 즉시 최신화
-        await loadChatHistory();
     } catch (e) {
         alert(`Failed to send message: ${e}`);
     }
