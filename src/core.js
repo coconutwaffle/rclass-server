@@ -283,4 +283,7 @@ export function del_group(groupId) { if (!_client) throw new Error('Not joined')
 export function getGroups() { if (!_client) throw new Error('Not joined'); return _client.getGroups(); }
 export function getOnlineUsers() { if (!_client) throw new Error('Not joined'); return _client.getOnlineUsers(); }
 export function chat_send(msg, mode, send_to) { if (!_client) throw new Error('Not joined'); return _client.chatSend(msg, mode, send_to); }
-export function chat_history(params) { if (!_client) throw new Error('Not joined'); return _client.chatHistory(params); }
+export function chat_history(start_seq, end_seq) {
+  if (!_client) throw new Error("Not joined");
+  return _client.chatHistory({ start_seq, end_seq });
+}

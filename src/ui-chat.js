@@ -8,13 +8,13 @@ import { parseScalabilityMode } from 'mediasoup-client';
  *  채팅 관련 변수 및 함수
  *  ========================= */
 let chatHistoryLoaded = false;
-let lastMessageTimestamp = 0;
+let lastmsgseq = 0;
 let chatUpdateTimer = null;
 
 export function clearChatUI() {
     dom.chatMessages().innerHTML = '';
     chatHistoryLoaded = false;
-    lastMessageTimestamp = 0;
+    lastmsgseq = 0;
     if (chatUpdateTimer) {
         clearInterval(chatUpdateTimer);
         chatUpdateTimer = null;
@@ -28,8 +28,8 @@ function appendChatMessage({ from, msg, ts }) {
     dom.chatMessages().appendChild(msgDiv);
 
     // 가장 최신 메시지 타임스탬프 저장
-    if (ts > lastMessageTimestamp) {
-        lastMessageTimestamp = ts;
+    if (ts > lastmsgseq) {
+        lastmsgseq = ts;
     }
 }
 
@@ -42,16 +42,18 @@ async function loadChatHistory() {
     if (!get_UIstatus('isJoined')) return;
 
     try {
-        const params = { limit: 100 };
+        const params = {};
         // 두 번째 로드부터는 마지막 메시지 이후의 메시지만 가져옴
-        if (chatHistoryLoaded && lastMessageTimestamp > 0) {
-            params.after_ts = lastMessageTimestamp;
+        if (chatHistoryLoaded && lastmsgseq > 0) {
+            params = { start_seq: lastmsgseq + 1 };
+            params = { end_seq: Number.MAX_SAFE_INTEGER };
         }
 
-        const history = await core.chat_history(params);
+        const history = await core.chat_history(params.start_seq, params.end_seq);
         if (history && history.messages) {
             history.messages.forEach(appendChatMessage);
             if (history.messages.length > 0) {
+                lastmsgseq = history.messages[history.messages.length - 1].seq;
                 scrollToChatBottom();
             }
         }

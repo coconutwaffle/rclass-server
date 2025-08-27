@@ -8,6 +8,7 @@ const mediasoup = require('mediasoup');
 const config = require('./src/config');
 const crypto = require("crypto");
 const { json } = require('stream/consumers');
+const e = require('express');
 
 const app = express();
 app.use(express.static(__dirname + '/public'));
@@ -26,15 +27,28 @@ httpsServer.listen(config.port, () => {
 // --- Mediasoup setup ---
 let workers = [];
 let nextWorkerIdx = 0;
-const rooms = {}; // { [roomId]: { router, clients: Map<clientId, clientData> , groups: Map<groupId, groupData>} }
+const rooms = {}; // { [roomId]: { router, clients: Map<clientId, clientData> , groups: Map<groupId, groupData>}, chat_log: [] }
 
+function nextSeq(room) { return ++room.last_seq; }
 
-function makeMsgId(ts, content, from) {
-    const hash = crypto.createHash("sha1")
-        .update(content + from)
-        .digest("hex")
-        .slice(0, 8);
-    return `${ts}-${hash}`;
+// 유틸: 이진탐색(lowerBound/upperBound) — seq 오름차순 가정
+function lowerBoundBySeq(arr, targetSeq) {
+  let lo = 0, hi = arr.length; // 첫 >= target
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (arr[mid].seq >= targetSeq) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo;
+}
+function upperBoundBySeq(arr, targetSeq) {
+  let lo = 0, hi = arr.length; // 첫 > target
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (arr[mid].seq > targetSeq) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo;
 }
 
 async function runMediasoupWorkers() {
@@ -72,9 +86,6 @@ io.on('connection', (socket) => {
     let clientId = null;
     let roomId = null;
 
-    const respond = (event, data) => {
-        socket.emit(event, data);
-    };
 
     socket.on('join_room', async (data, callback) => {
         ({ roomId, clientId } = data);
@@ -90,7 +101,7 @@ io.on('connection', (socket) => {
         if (!room) {
             const worker = getMediasoupWorker();
             const router = await worker.createRouter({ mediaCodecs: config.mediasoup.router.mediaCodecs });
-            room = { router, clients: new Map(), groups: new Map(), nextGroupId: 1, chat_log: [] };
+            room = { router, clients: new Map(), groups: new Map(), nextGroupId: 1, chat_log: [], last_seq: 0 };
             rooms[roomId] = room;
             console.log(`Room ${roomId} created.`);
         }
@@ -345,36 +356,28 @@ io.on('connection', (socket) => {
             const room = rooms[roomId];
             if (!room) return callback?.({ result: false, data: "Not in a room" });
 
-            const msgText = String(data?.msg ?? "").trim();
+            const msgText = String(data?.msg ?? "");
             if (!msgText) return callback?.({ result: false, data: "empty message" });
+            if (msgText.length > 4096) return callback?.({ result: false, data: "message_too_long" });
 
             const mode = data?.mode === "SECRET" ? "SECRET" : "ALL";
             const sendTo = Array.isArray(data?.send_to) ? data.send_to : [];
 
             const ts = Date.now();
-            const msgId = makeMsgId(ts, msgText, clientId);
+            const seq = nextSeq(room);
+            const msgId = `${roomId}-${seq}`;
 
             let recipients = [];
-            if (mode === "ALL") {
-                // ALL이면 recipients는 자기자신 포함 (사실 의미 없음, send_to는 빈 배열로 저장)
-                recipients = [clientId];
-
-                const chat = {
-                    msgId,
-                    ts,
-                    msg: msgText,
-                    mode,
-                    send_to: [], // ALL은 send_to 비워둠
-                    from: clientId,
-                };
-
-                // 로그 먼저 기록
-                room.chat_log.push(chat);
-
-                // 전체 브로드캐스트
-                io.to(roomId).emit("chat_message", chat);
-
-            } else {
+            const chat = {
+                seq,
+                msgId,
+                ts,
+                msg: msgText,
+                mode,
+                send_to: recipients,
+                from: clientId,
+            };
+            if (mode !== "ALL") {
                 const validTargets = new Set([clientId]);
                 for (const cid of sendTo) {
                     if (room.clients.has(cid)) validTargets.add(cid);
@@ -386,27 +389,19 @@ io.on('connection', (socket) => {
 
                 // recipients = 자기 자신 + 유효한 대상 전체
                 recipients = [...validTargets];
+                chat.send_to = recipients;
+            }
 
-                const chat = {
-                    msgId,
-                    ts,
-                    msg: msgText,
-                    mode,
-                    send_to: recipients, // 로그에는 자기 자신도 포함
-                    from: clientId,
-                };
-
-                // 로그를 우선 저장
-                room.chat_log.push(chat);
-
-                // 실제 전송은 자기 자신 제외
-                // recipients = recipients.filter(v => v !== clientId);
+            room.chat_log.push(chat);
+            if (mode === "ALL") {
+                io.to(roomId).emit("chat_message", chat);
+            }
+            else {
                 for (const cid of recipients) {
                     const entry = room.clients.get(cid);
                     entry?.socket?.emit("chat_message", chat);
                 }
             }
-
             callback?.({ result: true, data: { msgId, ts } });
         } catch (err) {
             callback?.({ result: false, data: "internal_error" });
@@ -418,26 +413,71 @@ io.on('connection', (socket) => {
     socket.on("chat_history", async (data, callback) => {
         try {
             const room = rooms[roomId];
-            if (!room) return callback?.({ result: false, data: "Not in a room" });
+            if (!room) return callback?.({ result: false, data: "not_in_room" });
 
-            const { limit = 50, before_ts, after_ts } = data || {};
-            let list = room.chat_log.filter(m => {
-                if (m.mode === "ALL") return true;
-                if (m.mode === "SECRET") {
-                    return m.from === clientId || (Array.isArray(m.send_to) && m.send_to.includes(clientId));
+            // 0) 권한 필터 통과 메시지 배열(이미 seq 오름차순이라고 가정)
+            const visible = room.chat_log.filter(m =>
+                m.mode === "ALL" ||
+                (m.mode === "SECRET" && (m.from === clientId || (Array.isArray(m.send_to) && m.send_to.includes(clientId))))
+            );
+
+            const DEFAULT_WINDOW = 50;
+            const MAX_WINDOW = 200;
+
+            // 1) 입력 정규화
+            let startSeq = Number.isFinite(data?.start_seq) ? Number(data.start_seq) : undefined;
+            let endSeq = Number.isFinite(data?.end_seq) ? Number(data.end_seq) : undefined;
+
+            // visible이 비면 즉시 반환
+            if (visible.length === 0) {
+                return callback?.({ result: true, data: { messages: [], before_messages_number: 0, after_messages_number: 0 } });
+            }
+
+            const minSeq = visible[0].seq;
+            const maxSeq = visible[visible.length - 1].seq;
+
+            // 2) 기본 구간 보정
+            if (startSeq == null && endSeq == null) {
+                // 최신 꼬리 DEFAULT_WINDOW
+                endSeq = maxSeq;
+                startSeq = Math.max(minSeq, endSeq - (DEFAULT_WINDOW - 1));
+            } else if (startSeq == null) {
+                // end만 있음 → 뒤쪽 고정, 앞쪽으로 윈도 생성
+                endSeq = Math.min(Math.max(endSeq, minSeq), maxSeq);
+                startSeq = Math.max(minSeq, endSeq - (MAX_WINDOW - 1));
+            } else if (endSeq == null) {
+                // start만 있음 → 앞쪽 고정, 뒤로 윈도 생성
+                startSeq = Math.min(Math.max(startSeq, minSeq), maxSeq);
+                endSeq = Math.min(maxSeq, startSeq + (MAX_WINDOW - 1));
+            } else {
+                // 둘 다 있음 → 범위 정렬
+                if (startSeq > endSeq) [startSeq, endSeq] = [endSeq, startSeq];
+                // 서버 보호: 너무 큰 창이면 MAX_WINDOW로 클램프(뒤쪽 기준으로 맞추기)
+                if (endSeq - startSeq + 1 > MAX_WINDOW) {
+                    startSeq = endSeq - (MAX_WINDOW - 1);
                 }
-                return false;
+                // 경계 클램프
+                startSeq = Math.max(minSeq, startSeq);
+                endSeq = Math.min(maxSeq, endSeq);
+            }
+
+            // 3) 이진탐색으로 인덱스 범위 구하기 (포함형 [startSeq, endSeq])
+            const left = lowerBoundBySeq(visible, startSeq);      // 첫 seq>=startSeq
+            const right = upperBoundBySeq(visible, endSeq);        // 첫 seq> endSeq (배타)
+            const messages = visible.slice(left, right);
+
+            // 4) 남은 개수 계산 (권한 필터 이후 기준)
+            const before_messages_number = left;                         // 구간 앞에 있는 개수
+            const after_messages_number = visible.length - right;       // 구간 뒤에 있는 개수
+
+            callback?.({
+                result: true,
+                data: {
+                    messages,
+                    before_messages_number,
+                    after_messages_number
+                }
             });
-
-            if (before_ts) list = list.filter(m => m.ts < before_ts);
-            if (after_ts) list = list.filter(m => m.ts > after_ts);
-
-            list.sort((a, b) => a.ts - b.ts);
-            const slice = list.slice(-limit);
-            const has_more = list.length > slice.length;
-            const next_cursor = slice.length ? slice[0].ts : null;
-
-            callback?.({ result: true, data: { messages: slice, has_more, next_cursor } });
         } catch (err) {
             callback?.({ result: false, data: "internal_error" });
         }
