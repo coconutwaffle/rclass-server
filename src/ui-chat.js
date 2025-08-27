@@ -2,7 +2,6 @@
 import * as core from './core.js';
 import { dom, el } from './ui-utils.js';
 import { get_UIstatus } from './ui-main.js';
-import { parseScalabilityMode } from 'mediasoup-client';
 
 /** =========================
  *  채팅 관련 변수 및 함수
