@@ -7,6 +7,7 @@ const socketIO = require('socket.io');
 const mediasoup = require('mediasoup');
 const config = require('./src/config');
 const crypto = require("crypto");
+const { json } = require('stream/consumers');
 
 const app = express();
 app.use(express.static(__dirname + '/public'));
@@ -16,7 +17,7 @@ const httpsOptions = {
     cert: fs.readFileSync(__dirname + '/certs/fullchain.pem'),
 };
 const httpsServer = https.createServer(httpsOptions, app);
-const io = socketIO(httpsServer);
+const io = socketIO(httpsServer, {allowEIO3: true});
 
 httpsServer.listen(config.port, () => {
     console.log(`Server is running on https://${config.domain}:${config.port}`);
@@ -117,19 +118,23 @@ io.on('connection', (socket) => {
             const transport = await room.router.createWebRtcTransport({
                 ...config.webRtcTransport,
                 listenIps: config.webRtcTransport.listenIps.map(ip => ({ ...ip, announcedIp: ip.announcedIp || config.domain })),
+                enableSctp: true, 
+                enableUdp: true,
+                enableTcp: true,
             });
 
             const clientData = room.clients.get(clientId);
             clientData.transports.set(transport.id, transport);
-
-            callback({
-                result: true,
-                data: {
+            const res_k = {
                     id: transport.id,
                     iceParameters: transport.iceParameters,
                     iceCandidates: transport.iceCandidates,
                     dtlsParameters: transport.dtlsParameters,
+                    sctpParameters: transport.sctpParameters,
                 }
+            callback({
+                result: true,
+                data: res_k
             });
         } catch (error) {
             console.error('Failed to create transport:', error);
@@ -145,7 +150,7 @@ io.on('connection', (socket) => {
 
         const transport = clientData.transports.get(transportId);
         if (!transport) return callback({ result: false, data: 'Transport not found' });
-
+        console.log(`[conntect_transport] roomId: ${roomId} clientId: ${clientId}`);
         try {
             await transport.connect({ dtlsParameters });
             callback({ result: true, data: null });

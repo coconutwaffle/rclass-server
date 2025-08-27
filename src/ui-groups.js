@@ -1,217 +1,7 @@
-// ui.js  — ES Module
-// 요구사항 구현 + core.js 미구현 가능 지점은 // TODO(core) 로 주석 표시
+// ui-groups.js — ES Module
 import * as core from './core.js';
-
-/** =========================
- *  내부 상태
- *  ========================= */
-const ui = {
-    status: 'idle', // idle | joining | joined | leaving
-    roomId: 'NULL',
-    userId: 'NULL',
-    localgroups: [],
-    groups: new Map(), // groupId -> GroupState
-};
-
-class GroupState {
-    /**
-     * @param {int} groupId
-     * @param {'local'|'remote'} mode
-     * @param {string} userIdFromCreator
-     * @param {string} videoId producerId or consumerId or "NULL"
-     * @param {string} audioId producerId or consumerId or "NULL"
-     * @param {HTMLElement} card
-     */
-    constructor(groupId, mode, userIdFromCreator, videoId, audioId, card) {
-        this.groupId = groupId;
-        this.mode = mode;
-        this.userIdFromCreator = userIdFromCreator;
-        this.videoId = videoId;
-        this.audioId = audioId;
-        this.card = card;
-        // per-kind media info kept by UI (stream, role, id, paused, synthetic)
-        this.media = {
-            video: { stream: null, role: 'none', id: 'NULL', paused: false, synthetic: false },
-            audio: { stream: null, role: 'none', id: 'NULL', paused: false, synthetic: false },
-        };
-    }
-}
-
-/** =========================
- *  DOM 헬퍼
- *  ========================= */
-const $ = (sel) => document.querySelector(sel);
-const el = (tag, cls) => {
-    const n = document.createElement(tag);
-    if (cls) n.className = cls;
-    return n;
-};
-
-const dom = {
-    roomId: () => $('#roomId'),
-    userId: () => $('#userId'),
-    joinBtn: () => $('#joinBtn'),
-    leaveBtn: () => $('#leaveBtn'),
-    addGroupBtn: () => $('#addGroupBtn'),
-    sendTransport: () => $('#sendTransport'),
-    recvTransport: () => $('#recvTransport'),
-    groups: () => $('#groupsContainer'),
-    chatMessages: () => $('#chatMessages'),
-    chatInput: () => $('#chatInput'),
-    chatSendBtn: () => $('#chatSendBtn'),
-};
-
-/** =========================
- *  채팅 관련 변수 및 함수
- *  ========================= */
-let chatHistoryLoaded = false;
-let lastMessageTimestamp = 0;
-let chatUpdateTimer = null;
-
-function clearChatUI() {
-    dom.chatMessages().innerHTML = '';
-    chatHistoryLoaded = false;
-    lastMessageTimestamp = 0;
-    if (chatUpdateTimer) {
-        clearInterval(chatUpdateTimer);
-        chatUpdateTimer = null;
-    }
-}
-
-function appendChatMessage({ from, msg, ts }) {
-    const msgDiv = el('div', 'chat-message');
-    const timestamp = new Date(ts).toLocaleTimeString();
-    msgDiv.innerHTML = `<div><span class="meta">[${timestamp}] <b>${from}</b></span></div><div>${msg}</div>`;
-    dom.chatMessages().appendChild(msgDiv);
-
-    // 가장 최신 메시지 타임스탬프 저장
-    if (ts > lastMessageTimestamp) {
-        lastMessageTimestamp = ts;
-    }
-}
-
-function scrollToChatBottom() {
-    const chatContainer = dom.chatMessages();
-    chatContainer.scrollTop = chatContainer.scrollHeight;
-}
-
-async function loadChatHistory() {
-    if (!get_UIstatus('isJoined')) return;
-
-    try {
-        const params = { limit: 100 };
-        // 두 번째 로드부터는 마지막 메시지 이후의 메시지만 가져옴
-        if (chatHistoryLoaded && lastMessageTimestamp > 0) {
-            params.after_ts = lastMessageTimestamp;
-        }
-
-        const history = await core.chat_history(params);
-        if (history && history.messages) {
-            history.messages.forEach(appendChatMessage);
-            if (history.messages.length > 0) {
-                scrollToChatBottom();
-            }
-        }
-        chatHistoryLoaded = true;
-    } catch (e) {
-        console.error('Failed to load chat history:', e);
-    }
-}
-
-async function sendChatMessage() {
-    const input = dom.chatInput();
-    const msg = input.value.trim();
-    if (!msg) return;
-
-    try {
-        await core.chat_send(msg, 'ALL', []);
-        input.value = '';
-        // 메시지 전송 후 즉시 최신화
-        await loadChatHistory();
-    } catch (e) {
-        alert(`Failed to send message: ${e}`);
-    }
-}
-
-function initChat() {
-    // 1. 기존 채팅 기록 불러오기
-    loadChatHistory();
-
-    // 2. 5초마다 새로운 메시지 폴링
-    if (chatUpdateTimer) clearInterval(chatUpdateTimer);
-    chatUpdateTimer = setInterval(loadChatHistory, 5000);
-
-    // 3. 전송 버튼 이벤트 바인딩
-    dom.chatSendBtn().onclick = sendChatMessage;
-    dom.chatInput().onkeydown = (e) => {
-        if (e.key === 'Enter') {
-            e.preventDefault();
-            sendChatMessage();
-        }
-    };
-}
-
-/** =========================
- *  블랙 프레임 스트림 생성 (video)
- *  ========================= */
-function createBlackVideoStream(width = 640, height = 360) {
-    const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext('2d');
-    ctx.fillStyle = 'black';
-    ctx.fillRect(0, 0, width, height);
-    // 1fps 로 캡처 (정지 프레임)
-    // 일부 브라우저는 0 fps 거부 → 1 권장
-    const stream = canvas.captureStream(1);
-    return stream;
-}
-
-/** =========================
- *  UI 상태 <-> DOM 바인딩
- *  ========================= */
-function lockRoomInputs(locked) {
-    dom.roomId().disabled = locked;
-    dom.userId().disabled = locked;
-}
-function setButtonsForStatus() {
-    switch (ui.status) {
-        case 'idle':
-            dom.joinBtn().disabled = false;
-            dom.leaveBtn().disabled = true;
-            lockRoomInputs(false);
-            break;
-        case 'joining':
-            dom.joinBtn().disabled = true;
-            dom.leaveBtn().disabled = false; // 사용자는 중도 취소 가능하도록 유지
-            lockRoomInputs(true);
-            break;
-        case 'joined':
-            dom.joinBtn().disabled = true;
-            dom.leaveBtn().disabled = false;
-            lockRoomInputs(true);
-            break;
-        case 'leaving':
-            dom.joinBtn().disabled = true;
-            dom.leaveBtn().disabled = true;
-            lockRoomInputs(true);
-            break;
-    }
-}
-
-/** =========================
- *  장치 나열 (local 전용)
- *  ========================= */
-async function listDevices() {
-    // 첫 enumerate 이전에 장치 권한 부여 필요할 수 있음(브라우저 정책)
-    try {
-        await navigator.mediaDevices.getUserMedia({ audio: false, video: false }).catch(() => { });
-    } catch { }
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    const cams = devices.filter((d) => d.kind === 'videoinput');
-    const mics = devices.filter((d) => d.kind === 'audioinput');
-    return { cams, mics };
-}
+import { ui, GroupState } from './ui-state.js';
+import { el, listDevices, createBlackVideoStream, dom } from './ui-utils.js';
 
 /** =========================
  *  그룹 카드 생성
@@ -291,7 +81,7 @@ function buildLocalGroupCard(groupId, userId, initialVideoId, initialAudioId) {
     btnPauseA.onclick = () => pauseMedia(groupId, 'audio', true);
     btnResumeA.onclick = () => pauseMedia(groupId, 'audio', false);
 
-    btnDel.onclick = () => del_group(groupId);
+    btnDel.onclick = () => del_group_ui(groupId);
     return card;
 }
 
@@ -351,7 +141,7 @@ function buildRemoteGroupCard(groupId, userId, initialVideoId, initialAudioId) {
     btnMute.onclick = () => pauseMedia(groupId, 'audio', true);
     btnUnmute.onclick = () => pauseMedia(groupId, 'audio', false);
 
-    btnDel.onclick = () => del_group(groupId);
+    btnDel.onclick = () => del_group_ui(groupId);
 
     return card;
 }
@@ -366,84 +156,6 @@ function updateMetaIds(group) {
     if (audSpan) audSpan.textContent = group.audioId;
 }
 
-/** =========================
- *  (1) get_UIstatus(key)
- *  ========================= */
-export function get_UIstatus(key) {
-    switch (key) {
-        case 'roomId': return ui.roomId;
-        case 'userId': return ui.userId;
-        case 'isJoined': return ui.status === 'joined';
-        case 'status': return ui.status;
-        default:
-            throw new Error(`Unknown key: ${key}`);
-    }
-}
-
-/** =========================
- *  (2) join_room()
- *  ========================= */
-export async function join_room() {
-    if (ui.status !== 'idle') {
-        // idle이 아닌 경우 입력 잠금 유지, join 비활성화
-        setButtonsForStatus();
-        return;
-    }
-
-    ui.roomId = dom.roomId().value || 'NULL';
-    ui.userId = dom.userId().value || 'NULL';
-
-    ui.status = 'joining';
-    setButtonsForStatus();
-
-    try {
-        await core.handleJoinRoom(
-            ui.roomId,
-            ui.userId,
-            update_group,        // 서버/코어 콜백: 원격 변경 반영
-            leave_room,          // 서버 끊김 시 콜백 (즉시 실패에는 해당 없음)
-            updateTransportStatus
-        ); // TODO(core): core.handleJoinRoom 구현 필요 (콜백 호출 포함)
-        ui.status = 'joined';
-        setButtonsForStatus();
-        initChat(); // 채팅 기능 초기화
-    } catch (e) {
-        ui.status = 'idle';
-        setButtonsForStatus();
-        alert(e);
-    }
-}
-
-/** =========================
- *  (3) leave_room()
- *  ========================= */
-export async function leave_room() {
-    if (ui.status === 'idle') return;
-    ui.status = 'leaving';
-    setButtonsForStatus();
-
-    try {
-        await core.handleLeaveRoom(); // TODO(core)
-    } finally {
-        // 그룹 비움 및 UI 초기화
-        for (const gid of [...ui.groups.keys()]) {
-            await del_group(gid);
-        }
-
-        dom.sendTransport().textContent = 'idle';
-        dom.recvTransport().textContent = 'idle';
-
-        clearChatUI(); // 채팅 UI 정리
-
-        ui.status = 'idle';
-        setButtonsForStatus();
-    }
-}
-
-/** =========================
- *  (4) add_group(groupId, userId, videoId, audioId, mode)
- *  - groupId == 0 금지
- *  ========================= */
 export function add_group(groupId, userId, videoId, audioId, mode) {
     ui.groups.set(groupId, null);
     if (mode === 'local')
@@ -473,10 +185,6 @@ export function add_group(groupId, userId, videoId, audioId, mode) {
     ui.groups.set(groupId, g);
 }
 
-/** =========================
- *  (5) set_group(groupId, videoId, audioId)
- *  - DOM 텍스트/상태만 갱신 (실제 미디어 교체는 update_group에서)
- *  ========================= */
 export function set_group(groupId, videoId, audioId) {
     const g = ui.groups.get(groupId);
     if (!g) return;
@@ -486,15 +194,15 @@ export function set_group(groupId, videoId, audioId) {
     updateMetaIds(g);
 }
 
-/** =========================
- *  (6) del_group(groupId)
- *  - DOM 삭제, track stop, producer/consumer 정리
- *  ========================= */
-export async function del_group(groupId) {
-    if (!ui.localgroups.includes(groupId))
+async function del_group_ui(gruopId){
+    if (!ui.localgroups.includes(gruopId))
     {
         return;
     }
+    await del_group(gruopId);
+    ui.localgroups.remove(gruopId);
+}
+export async function del_group(groupId) {
     const g = ui.groups.get(groupId);
     if (!g) return;
     // 미디어/프로듀서/컨슈머 정리
@@ -514,10 +222,6 @@ export async function del_group(groupId) {
     ui.groups.delete(groupId);
 }
 
-/** =========================
- *  (7) set_media(groupId, kind, stream)
- *  - 기존 srcObject 있으면 교체 후 기존 트랙 stop + producer/consumer close
- *  ========================= */
 export async function set_media(groupId, kind, stream) {
     const g = ui.groups.get(groupId);
     if (!g) return;
@@ -560,10 +264,6 @@ export async function set_media(groupId, kind, stream) {
     }
 }
 
-/** =========================
- *  (8) del_media(groupId, kind)
- *  - srcObject=null, 비디오는 블랙 프레임
- *  ========================= */
 export async function del_media(groupId, kind) {
     const g = ui.groups.get(groupId);
     if (!g) return;
@@ -600,56 +300,6 @@ export async function del_media(groupId, kind) {
     }
 }
 
-/** =========================
- *  (8-확장) update_group(groups)
- *  - 원격 변경 사항 반영(core 콜백 전용)
- *  - {group_id: { videoId, audioId, userId? } }
- *  ========================= */
-export async function update_group(groupsWrapper) {
-    // 서버에서 오는 payload: { groups: [[gid, payload], [gid, payload], ...] }
-    const arr = groupsWrapper.groups;
-
-    // 1) 신규/변경 반영
-    for (const [gid, payload] of arr) {
-        const nextVideoId = (payload.video_id ?? 'NULL');
-        const nextAudioId = (payload.audio_id ?? 'NULL');
-        const ownerUserId = (payload.creater ?? 'remoteUser');
-
-        if (!ui.groups.has(gid)) {
-            // 신규 그룹 추가 (remote 로 간주)
-            add_group(gid, ownerUserId, nextVideoId, nextAudioId, 'remote');
-        } else {
-            const g = ui.groups.get(gid);
-            if (g.videoId !== nextVideoId || g.audioId !== nextAudioId) {
-                set_group(gid, nextVideoId, nextAudioId);
-            }
-        }
-    }
-
-    // 2) 삭제 감지 (기존에 있는데 서버 배열에 없는 경우)
-    const serverGroupIds = new Set(arr.map(([gid]) => gid));
-
-    for (const gid of ui.groups.keys()) {
-        if (!serverGroupIds.has(gid)) {
-            await del_group(gid);
-        }
-    }
-}
-
-/** =========================
- *  (9) updateTransportStatus(direction, state)
- *  ========================= */
-export function updateTransportStatus(direction, stateStr) {
-    if (direction === 'send') {
-        dom.sendTransport().textContent = stateStr;
-    } else if (direction === 'recv') {
-        dom.recvTransport().textContent = stateStr;
-    }
-}
-
-/** =========================
- *  Local Produce 제어
- *  ========================= */
 async function startLocalProduce(groupId, kind, deviceId, mediaEl) {
     const g = ui.groups.get(groupId);
     if (!g || g.mode !== 'local') return;
@@ -729,9 +379,6 @@ function pauseMedia(groupId, kind, paused) {
     });
 }
 
-/** =========================
- *  Remote Consume 제어 (버튼)
- *  ========================= */
 async function startRemoteConsume(groupId, kind, mediaEl) {
     const g = ui.groups.get(groupId);
     if (!g || g.mode !== 'remote') return;
@@ -771,56 +418,3 @@ async function closeRemoteConsume(groupId, kind) {
     }
     await del_media(groupId, kind);
 }
-
-/** =========================
- *  초기 바인딩
- *  ========================= */
-function bindGlobalUI() {
-    dom.joinBtn().addEventListener('click', join_room);
-    dom.leaveBtn().addEventListener('click', leave_room);
-
-    dom.addGroupBtn().addEventListener('click', async () => {
-        try {
-            // 그룹 생성
-            const newGroupId = await core.setGroup(0, 'NULL', 'NULL'); // 0 → 생성 규약, "NULL" 허용  // TODO(core)
-            add_group(newGroupId, ui.userId, 'NULL', 'NULL', 'local');
-        } catch (e) {
-            alert(`add group failed: ${e}`);
-        }
-    });
-}
-
-window.addEventListener('DOMContentLoaded', () => {
-    setButtonsForStatus();
-    bindGlobalUI();
-});
-
-/* =========================================================
-   정리/메모 (core.js에 필요한 포인트)
-   ---------------------------------------------------------
-   - handleJoinRoom(roomId, userId, update_groupCb, leave_roomCb, updateTransportStatusCb)
-     * 성공 시 resolve(), 실패 시 reject(message)
-     * 서버 이벤트를 update_groupCb로 내려줄 것 (payload: { [gid]: { videoId, audioId, userId? } })
-     * 연결 종료 감지 시 leave_roomCb 호출
-     * 트랜스포트 상태 변경 시 updateTransportStatusCb(direction, state) 호출
-
-   - handleLeaveRoom(): 방 퇴장, 소켓/자원 정리 보장
-
-   - handleStartProducing(track): resolve(producerId)
-
-   - handleCloseProducing(producerId): resolve(producerId)
-
-   - handleConsumeStream(producerId, kind, groupId):
-       현재 스펙에선 resolve(stream)만 기술됨.
-       → UI에서 consumer close/교체를 정확히 처리하려면 consumerId 필요.
-       제안: resolve({ stream, consumerId })
-       (UI는 consumerId 존재 시 close 시도, 없으면 tracks stop만 수행)
-
-   - handleClose(id): producerId 또는 consumerId를 받아 적절히 close
-
-   - setGroup(groupId, videoId, audioId):
-       groupId == "0" 이면 생성 → resolve(신규 groupId)
-       그 외 수정 → resolve(groupId)
-
-   - del_group(groupId): resolve(groupId)
-   ========================================================= */
