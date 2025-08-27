@@ -2,7 +2,7 @@
 import * as core from './core.js';
 import { ui } from './ui-state.js';
 import { dom } from './ui-utils.js';
-import { initChat, clearChatUI } from './ui-chat.js';
+import { initChat, clearChatUI , recv_chat_upate} from './ui-chat.js';
 import { add_group, set_group, del_group } from './ui-groups.js';
 
 /** =========================
@@ -73,7 +73,8 @@ export async function join_room() {
             ui.userId,
             update_group,        // 서버/코어 콜백: 원격 변경 반영
             leave_room,          // 서버 끊김 시 콜백 (즉시 실패에는 해당 없음)
-            updateTransportStatus
+            updateTransportStatus,
+            recv_chat_upate
         ); // TODO(core): core.handleJoinRoom 구현 필요 (콜백 호출 포함)
         ui.status = 'joined';
         setButtonsForStatus();

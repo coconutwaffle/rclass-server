@@ -29,6 +29,8 @@ export class RoomClient {
   onDisconnect = () => {};
   /** @type {(groups: any)=>void} */
   onGroupsUpdated = () => {};
+  /** @type {(groups: any)=>void} */
+  onRecvchat = () => {};
   /** @type {(kind: TransportKind, state: string)=>void} */
   onTransportState = () => {};
 
@@ -76,7 +78,7 @@ export class RoomClient {
     // 3) 이벤트 바인딩
     this.#socket.on('disconnect', (reason) => this.onDisconnect?.(reason));
     this.#socket.on('update_groups', (payload) => this.onGroupsUpdated?.(payload));
-
+    this.#socket.on('chat_message', (payload) => this.onRecvchat?.(payload));
     // 4) Device 준비
     this.#device = new Device();
     await this.#device.load({ routerRtpCapabilities: rtpCapabilities });
@@ -239,11 +241,12 @@ export class RoomClient {
 
 let _client/** @type {RoomClient|null} */ = null;
 
-export async function handleJoinRoom(roomId, userId, update_group, leave_room_callback, updateTransportStatus) {
+export async function handleJoinRoom(roomId, userId, update_group, leave_room_callback, updateTransportStatus, recv_chat) {
   _client = new RoomClient();
   _client.onDisconnect = leave_room_callback;
   _client.onGroupsUpdated = update_group;
   _client.onTransportState = updateTransportStatus;
+  _client.onRecvchat = recv_chat;
   await _client.join({ roomId, userId });
 }
 
