@@ -117,33 +117,28 @@ export async function leave_room() {
  *  - 원격 변경 사항 반영(core 콜백 전용)
  *  - {group_id: { videoId, audioId, userId? } }
  *  ========================= */
-export async function update_group(groupsWrapper) {
-    // 서버에서 오는 payload: { groups: [[gid, payload], [gid, payload], ...] }
-    const arr = groupsWrapper.groups;
+export async function update_group(payload) {
+    const { group_id, mode, data } = payload;
 
-    // 1) 신규/변경 반영
-    for (const [gid, payload] of arr) {
-        const nextVideoId = (payload.video_id ?? 'NULL');
-        const nextAudioId = (payload.audio_id ?? 'NULL');
-        const ownerUserId = (payload.creater ?? 'remoteUser');
-
-        if (!ui.groups.has(gid)) {
-            // 신규 그룹 추가 (remote 로 간주)
-            add_group(gid, ownerUserId, nextVideoId, nextAudioId, 'remote');
-        } else {
-            const g = ui.groups.get(gid);
-            if (g.videoId !== nextVideoId || g.audioId !== nextAudioId) {
-                set_group(gid, nextVideoId, nextAudioId);
-            }
+    switch (mode) {
+        case 'create': {
+            const { video_id, audio_id, clientId } = data;
+            add_group(group_id, clientId, video_id, audio_id, 'remote');
+            break;
         }
-    }
-
-    // 2) 삭제 감지 (기존에 있는데 서버 배열에 없는 경우)
-    const serverGroupIds = new Set(arr.map(([gid]) => gid));
-
-    for (const gid of ui.groups.keys()) {
-        if (!serverGroupIds.has(gid)) {
-            await del_group(gid);
+        case 'edit': {
+            const { video_id, audio_id } = data;
+            const g = ui.groups.get(group_id);
+            if (g && (g.videoId !== video_id || g.audioId !== audio_id)) {
+                set_group(group_id, video_id, audio_id);
+            }
+            break;
+        }
+        case 'delete': {
+            if (ui.groups.has(group_id)) {
+                await del_group(group_id);
+            }
+            break;
         }
     }
 }

@@ -77,7 +77,7 @@ export class RoomClient {
 
     // 3) 이벤트 바인딩
     this.#socket.on('disconnect', (reason) => this.onDisconnect?.(reason));
-    this.#socket.on('update_groups', (payload) => this.onGroupsUpdated?.(payload));
+    this.#socket.on('update_group_one', (payload) => this.onGroupsUpdated?.(payload));
     this.#socket.on('chat_message', (payload) => this.onRecvchat?.(payload));
     // 4) Device 준비
     this.#device = new Device();
@@ -90,8 +90,12 @@ export class RoomClient {
     await this.#createTransports();
 
     // 7) 초기 그룹 상태 fetch
-    const groups = await this.getGroups();
-    this.onGroupsUpdated?.(groups);
+    const initialGroups = await this.getGroups();
+    if (this.onGroupsUpdated) {
+      for (const [groupId, groupData] of initialGroups.groups) {
+        this.onGroupsUpdated({ group_id: groupId, mode: 'create', data: groupData });
+      }
+    }
   }
 
   /** 트랜스포트 생성/연결 공통 */

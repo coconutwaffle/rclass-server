@@ -88,44 +88,48 @@ io.on('connection', (socket) => {
 
 
     socket.on('join_room', async (data, callback) => {
-        ({ roomId, clientId } = data);
-        if (!roomId || !clientId) {
-            return callback({ result: false, data: 'roomId and clientId are required' });
+        try {
+            ({ roomId, clientId } = data);
+            if (!roomId || !clientId) {
+                return callback({ result: false, data: 'roomId and clientId are required' });
+            }
+
+            let room = rooms[roomId];
+            if (room && room.clients.has(clientId)) {
+                return callback({ result: false, data: `Client with ID ${clientId} already in room ${roomId}` });
+            }
+
+            if (!room) {
+                const worker = getMediasoupWorker();
+                const router = await worker.createRouter({ mediaCodecs: config.mediasoup.router.mediaCodecs });
+                room = { router, clients: new Map(), groups: new Map(), nextGroupId: 1, chat_log: [], last_seq: 0 };
+                rooms[roomId] = room;
+                console.log(`Room ${roomId} created.`);
+            }
+
+            const clientData = {
+                socket,
+                clientId,
+                transports: new Map(),
+                producers: new Map(),
+                consumers: new Map(),
+                groups: new Map(),
+            };
+            room.clients.set(clientId, clientData);
+            socket.join(roomId);
+
+            console.log(`Client ${clientId} joined room ${roomId}`);
+            callback({ result: true, data: { rtpCapabilities: room.router.rtpCapabilities } });
+        } catch (err) {
+            callback({ result: false, data: err.message });
         }
-
-        let room = rooms[roomId];
-        if (room && room.clients.has(clientId)) {
-            return callback({ result: false, data: `Client with ID ${clientId} already in room ${roomId}` });
-        }
-
-        if (!room) {
-            const worker = getMediasoupWorker();
-            const router = await worker.createRouter({ mediaCodecs: config.mediasoup.router.mediaCodecs });
-            room = { router, clients: new Map(), groups: new Map(), nextGroupId: 1, chat_log: [], last_seq: 0 };
-            rooms[roomId] = room;
-            console.log(`Room ${roomId} created.`);
-        }
-
-        const clientData = {
-            socket,
-            clientId,
-            transports: new Map(),
-            producers: new Map(),
-            consumers: new Map(),
-            groups: new Map(),
-        };
-        room.clients.set(clientId, clientData);
-        socket.join(roomId);
-
-        console.log(`Client ${clientId} joined room ${roomId}`);
-        callback({ result: true, data: { rtpCapabilities: room.router.rtpCapabilities } });
     });
 
     socket.on('create_transport', async (data, callback) => {
-        const room = rooms[roomId];
-        if (!room) return callback({ result: false, data: 'Not in a room' });
-
         try {
+            const room = rooms[roomId];
+            if (!room) return callback({ result: false, data: 'Not in a room' });
+
             const transport = await room.router.createWebRtcTransport({
                 ...config.webRtcTransport,
                 listenIps: config.webRtcTransport.listenIps.map(ip => ({ ...ip, announcedIp: ip.announcedIp || config.domain })),
@@ -154,15 +158,15 @@ io.on('connection', (socket) => {
     });
 
     socket.on('connect_transport', async (data, callback) => {
-        const { transportId, dtlsParameters } = data;
-        const room = rooms[roomId];
-        const clientData = room.clients.get(clientId);
-        if (!room || !clientData) return callback({ result: false, data: 'Not in a room' });
-
-        const transport = clientData.transports.get(transportId);
-        if (!transport) return callback({ result: false, data: 'Transport not found' });
-        console.log(`[conntect_transport] roomId: ${roomId} clientId: ${clientId}`);
         try {
+            const { transportId, dtlsParameters } = data;
+            const room = rooms[roomId];
+            const clientData = room.clients.get(clientId);
+            if (!room || !clientData) return callback({ result: false, data: 'Not in a room' });
+
+            const transport = clientData.transports.get(transportId);
+            if (!transport) return callback({ result: false, data: 'Transport not found' });
+            console.log(`[conntect_transport] roomId: ${roomId} clientId: ${clientId}`);
             await transport.connect({ dtlsParameters });
             callback({ result: true, data: null });
         } catch (error) {
@@ -172,15 +176,15 @@ io.on('connection', (socket) => {
     });
 
     socket.on('produce', async (data, callback) => {
-        const { transportId, kind, rtpParameters } = data;
-        const room = rooms[roomId];
-        const clientData = room.clients.get(clientId);
-        if (!room || !clientData) return callback({ result: false, data: 'Not in a room' });
-
-        const transport = clientData.transports.get(transportId);
-        if (!transport) return callback({ result: false, data: 'Transport not found' });
-
         try {
+            const { transportId, kind, rtpParameters } = data;
+            const room = rooms[roomId];
+            const clientData = room.clients.get(clientId);
+            if (!room || !clientData) return callback({ result: false, data: 'Not in a room' });
+
+            const transport = clientData.transports.get(transportId);
+            if (!transport) return callback({ result: false, data: 'Transport not found' });
+
             const producer = await transport.produce({ kind, rtpParameters });
             clientData.producers.set(producer.id, producer);
 
@@ -197,111 +201,123 @@ io.on('connection', (socket) => {
     });
 
     socket.on('set_group', (data, callback) => {
-        const { groupId, video_id, audio_id } = data;
-        const room = rooms[roomId];
-        const clientData = room.clients.get(clientId);
+        try {
+            const { groupId, video_id, audio_id } = data;
+            const room = rooms[roomId];
+            const clientData = room.clients.get(clientId);
 
-        if (!room || !clientData) {
-            return callback({ result: false, data: 'Not in a room' });
-        }
-        console.log(`groupId: ${groupId}, video_id: ${video_id}, audio_id: ${audio_id}`);
-        // Validate IDs and set to "NULL" if invalid
-        const final_video_id = clientData.producers.has(video_id) ? video_id : "NULL";
-        const final_audio_id = clientData.producers.has(audio_id) ? audio_id : "NULL";
-
-        // Case 1: Create a new group if groupId is 0 or not provided
-        if (groupId == 0 || !groupId) {
-            const newGroupId = room.nextGroupId++;
-            const groupData = {
-                groupId: newGroupId,
-                video_id: final_video_id,
-                audio_id: final_audio_id,
-                clientId
-            };
-
-            room.groups.set(newGroupId, groupData);
-            clientData.groups.set(newGroupId, groupData);
-
-            console.log(`Group ${newGroupId} CREATED for client ${clientId}:`, groupData);
-            socket.to(roomId).emit('update_groups', { groups: Array.from(room.groups.entries()) });
-            callback({ result: true, data: groupData });
-        }
-        // Case 2: Edit an existing group
-        else {
-            const groupToEdit = room.groups.get(groupId);
-
-            if (!groupToEdit) {
-                return callback({ result: false, data: `Group with ID ${groupId} not found.` });
+            if (!room || !clientData) {
+                return callback({ result: false, data: 'Not in a room' });
             }
-            if (groupToEdit.clientId !== clientId) {
-                return callback({ result: false, data: 'Not authorized to edit this group.' });
+            console.log(`groupId: ${groupId}, video_id: ${video_id}, audio_id: ${audio_id}`);
+            // Validate IDs and set to "NULL" if invalid
+            const final_video_id = clientData.producers.has(video_id) ? video_id : "NULL";
+            const final_audio_id = clientData.producers.has(audio_id) ? audio_id : "NULL";
+
+            // Case 1: Create a new group if groupId is 0 or not provided
+            if (groupId == 0 || !groupId) {
+                const newGroupId = room.nextGroupId++;
+                const groupData = {
+                    groupId: newGroupId,
+                    video_id: final_video_id,
+                    audio_id: final_audio_id,
+                    clientId
+                };
+
+                room.groups.set(newGroupId, groupData);
+                clientData.groups.set(newGroupId, groupData);
+
+                console.log(`Group ${newGroupId} CREATED for client ${clientId}:`, groupData);
+                socket.to(roomId).emit('update_group_one', { group_id: newGroupId, mode: 'create', data: groupData });
+                callback({ result: true, data: groupData });
             }
+            // Case 2: Edit an existing group
+            else {
+                const groupToEdit = room.groups.get(groupId);
 
-            const updatedGroupData = {
-                ...groupToEdit,
-                video_id: final_video_id,
-                audio_id: final_audio_id
-            };
+                if (!groupToEdit) {
+                    return callback({ result: false, data: `Group with ID ${groupId} not found.` });
+                }
+                if (groupToEdit.clientId !== clientId) {
+                    return callback({ result: false, data: 'Not authorized to edit this group.' });
+                }
 
-            room.groups.set(groupId, updatedGroupData);
-            clientData.groups.set(groupId, updatedGroupData); // Also update the client's own map
+                const updatedGroupData = {
+                    ...groupToEdit,
+                    video_id: final_video_id,
+                    audio_id: final_audio_id
+                };
 
-            console.log(`Group ${groupId} EDITED by client ${clientId}:`, updatedGroupData);
-            socket.to(roomId).emit('update_groups', { groups: Array.from(room.groups.entries()) });
-            callback({ result: true, data: updatedGroupData });
+                room.groups.set(groupId, updatedGroupData);
+                clientData.groups.set(groupId, updatedGroupData); // Also update the client's own map
+
+                console.log(`Group ${groupId} EDITED by client ${clientId}:`, updatedGroupData);
+                socket.to(roomId).emit('update_group_one', { group_id: groupId, mode: 'edit', data: updatedGroupData });
+                callback({ result: true, data: updatedGroupData });
+            }
+        } catch (err) {
+            callback({ result: false, data: err.message });
         }
     });
     socket.on('get_groups', (data, callback) => {
-        const room = rooms[roomId];
-        const clientData = room.clients.get(clientId);
-        data = { groups: Array.from(room.groups.entries()) };
-        callback({ result: true, data });
+        try {
+            const room = rooms[roomId];
+            const clientData = room.clients.get(clientId);
+            data = { groups: Array.from(room.groups.entries()) };
+            callback({ result: true, data });
+        } catch (err) {
+            callback({ result: false, data: err.message });
+        }
     })
     socket.on('del_group', (data, callback) => {
-        const { groupId } = data;
-        const room = rooms[roomId];
-        const clientData = room.clients.get(clientId);
+        try {
+            const { groupId } = data;
+            const room = rooms[roomId];
+            const clientData = room.clients.get(clientId);
 
-        if (!room || !clientData) {
-            return callback({ result: false, data: 'Not in a room' });
+            if (!room || !clientData) {
+                return callback({ result: false, data: 'Not in a room' });
+            }
+
+            const groupToDelete = room.groups.get(groupId);
+
+            if (!groupToDelete) {
+                return callback({ result: false, data: `Group with ID ${groupId} not found.` });
+            }
+
+            if (groupToDelete.clientId !== clientId) {
+                return callback({ result: false, data: 'Not authorized to delete this group.' });
+            }
+
+            // Delete the group from the room and the client's list
+            room.groups.delete(groupId);
+            clientData.groups.delete(groupId);
+
+            console.log(`Group ${groupId} DELETED by client ${clientId}`);
+
+            // Notify everyone in the room
+            socket.to(roomId).emit('update_group_one', { group_id: groupId, mode: 'delete', data: groupToDelete });
+
+            callback({ result: true, data: { deletedGroupId: groupId } });
+        } catch (err) {
+            callback({ result: false, data: err.message });
         }
-
-        const groupToDelete = room.groups.get(groupId);
-
-        if (!groupToDelete) {
-            return callback({ result: false, data: `Group with ID ${groupId} not found.` });
-        }
-
-        if (groupToDelete.clientId !== clientId) {
-            return callback({ result: false, data: 'Not authorized to delete this group.' });
-        }
-
-        // Delete the group from the room and the client's list
-        room.groups.delete(groupId);
-        clientData.groups.delete(groupId);
-
-        console.log(`Group ${groupId} DELETED by client ${clientId}`);
-
-        // Notify everyone in the room
-        socket.to(roomId).emit('update_groups', { groups: Array.from(room.groups.entries()) });
-
-        callback({ result: true, data: { deletedGroupId: groupId } });
     });
 
     socket.on('consume', async (data, callback) => {
-        const { producerId, transportId } = data;
-        const room = rooms[roomId];
-        const clientData = room.clients.get(clientId);
-        if (!room || !clientData) return callback({ result: false, data: 'Not in a room' });
-
-        const transport = clientData.transports.get(transportId);
-        if (!transport) return callback({ result: false, data: 'Transport not found' });
-
-        if (!room.router.canConsume({ producerId, rtpCapabilities: clientData.rtpCapabilities })) {
-            return callback({ result: false, data: 'Cannot consume this producer' });
-        }
-
         try {
+            const { producerId, transportId } = data;
+            const room = rooms[roomId];
+            const clientData = room.clients.get(clientId);
+            if (!room || !clientData) return callback({ result: false, data: 'Not in a room' });
+
+            const transport = clientData.transports.get(transportId);
+            if (!transport) return callback({ result: false, data: 'Transport not found' });
+
+            if (!room.router.canConsume({ producerId, rtpCapabilities: clientData.rtpCapabilities })) {
+                return callback({ result: false, data: 'Cannot consume this producer' });
+            }
+
             const consumer = await transport.consume({
                 producerId,
                 rtpCapabilities: clientData.rtpCapabilities,
@@ -332,23 +348,31 @@ io.on('connection', (socket) => {
     });
 
     socket.on('store_rtp_capabilities', (data, callback) => {
-        const room = rooms[roomId];
-        const clientData = room.clients.get(clientId);
-        if (clientData) {
-            clientData.rtpCapabilities = data.rtpCapabilities;
+        try {
+            const room = rooms[roomId];
+            const clientData = room.clients.get(clientId);
+            if (clientData) {
+                clientData.rtpCapabilities = data.rtpCapabilities;
+            }
+            callback({ result: true, data: null });
+        } catch (err) {
+            callback({ result: false, data: err.message });
         }
-        callback({ result: true, data: null });
     });
 
     socket.on('resume_consumer', async (data, callback) => {
-        const { consumerId } = data;
-        const room = rooms[roomId];
-        const clientData = room.clients.get(clientId);
-        const consumer = clientData.consumers.get(consumerId);
-        if (consumer) {
-            await consumer.resume();
+        try {
+            const { consumerId } = data;
+            const room = rooms[roomId];
+            const clientData = room.clients.get(clientId);
+            const consumer = clientData.consumers.get(consumerId);
+            if (consumer) {
+                await consumer.resume();
+            }
+            callback({ result: true, data: null });
+        } catch (err) {
+            callback({ result: false, data: err.message });
         }
-        callback({ result: true, data: null });
     });
 
     socket.on("chat_send", async (data, callback) => {
@@ -394,17 +418,19 @@ io.on('connection', (socket) => {
 
             room.chat_log.push(chat);
             if (mode === "ALL") {
+                console.log(`[${roomId}][${msgId}] ${clientId} to ALL: ${msgText}`);
                 io.to(roomId).emit("chat_message", chat);
             }
             else {
                 for (const cid of recipients) {
                     const entry = room.clients.get(cid);
+                    console.log(`[${roomId}][${msgId}] ${clientId} to ${cid} (SECRET): ${msgText}`);
                     entry?.socket?.emit("chat_message", chat);
                 }
             }
             callback?.({ result: true, data: { msgId, ts } });
         } catch (err) {
-            callback?.({ result: false, data: "internal_error" });
+            callback?.({ result: false, data: err.message });
         }
     });
 
@@ -479,41 +505,50 @@ io.on('connection', (socket) => {
                 }
             });
         } catch (err) {
-            callback?.({ result: false, data: "internal_error" });
+            callback?.({ result: false, data: err.message });
         }
     });
 
     socket.on('get_online_users', (data, callback) => {
-        const room = rooms[roomId];
-        const clientData = room.clients.get(clientId);
-        if (!room || !clientData) return callback({ result: false, data: 'Not in a room' });
-        callback({ result: true, data: Array.from(room.clients.keys()) })
+        try {
+            const room = rooms[roomId];
+            const clientData = room.clients.get(clientId);
+            if (!room || !clientData) return callback({ result: false, data: 'Not in a room' });
+            callback({ result: true, data: Array.from(room.clients.keys()) })
+        } catch (err) {
+            callback({ result: false, data: err.message });
+        }
     });
     socket.on('disconnect', () => {
-        console.log(`Client disconnected: ${socket.id}`);
-        if (!roomId || !clientId) return;
+        try {
+            console.log(`Client disconnected: ${socket.id}`);
+            if (!roomId || !clientId) return;
 
-        const room = rooms[roomId];
-        if (!room) return;
+            const room = rooms[roomId];
+            if (!room) return;
 
-        const clientData = room.clients.get(clientId);
-        if (!clientData) return;
+            const clientData = room.clients.get(clientId);
+            if (!clientData) return;
 
-        // Close all resources
-        clientData.producers.forEach(p => p.close());
-        clientData.consumers.forEach(c => c.close());
-        clientData.transports.forEach(t => t.close());
-        clientData.groups.forEach((_, groupId) => room.groups.delete(groupId));
+            // Close all resources
+            clientData.producers.forEach(p => p.close());
+            clientData.consumers.forEach(c => c.close());
+            clientData.transports.forEach(t => t.close());
+            clientData.groups.forEach((groupData, groupId) => {
+                room.groups.delete(groupId);
+                socket.to(roomId).emit('update_group_one', { group_id: groupId, mode: 'delete', data: groupData });
+            });
 
-        room.clients.delete(clientId);
-        console.log(`Client ${clientId} left room ${roomId}`);
+            room.clients.delete(clientId);
+            console.log(`Client ${clientId} left room ${roomId}`);
 
-        socket.to(roomId).emit('update_groups', { groups: Array.from(room.groups.entries()) });
-
-        if (room.clients.size === 0) {
-            console.log(`Room ${roomId} is empty, closing router.`);
-            room.router.close();
-            delete rooms[roomId];
+            if (room.clients.size === 0) {
+                console.log(`Room ${roomId} is empty, closing router.`);
+                room.router.close();
+                delete rooms[roomId];
+            }
+        } catch (err) {
+            console.error('Error during disconnect:', err);
         }
     });
 });
