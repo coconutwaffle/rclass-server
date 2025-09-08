@@ -316,11 +316,12 @@ io.on('connection', (socket) => {
             room.clients_log.get(clientId).set(ts, {end_ts: null, log: {}})
             room.clients_log_isComplete.set(clientId, false);
             socket.join(roomId);
-            if(room.creator === logon_id)
+            if(room.creator === logon_id || room.creator === clientId)
             {
                 room.creator_client_id = clientId;
             }
-            console.log(`Client ${clientId} joined room ${roomId}`);
+            console.log(`room.creator: ${room.creator}, logon_id: ${logon_id}, clientId: ${clientId}`);
+            console.log(`Client ${clientId} joined room ${roomId} creator: ${(room.creator === logon_id)}`);
             callback({ result: true, data: { rtpCapabilities: room.router.rtpCapabilities , creator: (room.creator === logon_id)} });
         } catch (err) {
             console.log('Error during join_room:', err);
