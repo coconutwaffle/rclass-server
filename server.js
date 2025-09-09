@@ -125,10 +125,10 @@ async function createRoom(creatorId) {
  * @param {object} params
  * @param {object} params.socket - 소켓 객체
  * @param {string} params.clientId - 클라이언트 ID
- * @param {number} params.joinTs - 입장 타임스탬프
+ * @param {number} params.ts - 입장 타임스탬프
  * @returns {object} ClientData
  */
-function createClientData({ socket, clientId, joinTs }) {
+function createClientData({ socket, clientId, ts }) {
   return {
     socket,
     clientId,
@@ -136,7 +136,7 @@ function createClientData({ socket, clientId, joinTs }) {
     producers: new Map(),
     consumers: new Map(),
     groups: new Map(),
-    join_ts: joinTs,
+    join_ts: ts,
   };
 }
 
@@ -162,6 +162,10 @@ io.on('connection', (socket) => {
             callback({ result: true, data: `${id} logged in` });
         } 
         catch (err) {
+            console.error(`[ERROR] in 'login' handler:`, err);
+            if (err instanceof Error) {
+                console.error(err.stack);
+            }
             callback({ result: false, data: err.message });
         }
     })
@@ -172,21 +176,25 @@ io.on('connection', (socket) => {
             {
                 return callback({result: false, data:'log on required'});
             }
-            ({ roomId} = data);
-            if(!roomId)
+            roomId_ = data['roomId']
+            if(!roomId_)
             {
                 return callback({result: false, data:'roomId is required'});
             }
-            if(rooms.hasOwnProperty(roomId) || rooms_reserved.has(roomId))
+            if(rooms.hasOwnProperty(roomId_) || rooms_reserved.has(roomId_))
             {
                 return callback({result: false, data:"room already exists"});
             }
-            rooms_reserved.set(roomId, {'creator':logon_id});
-            console.log(`Room ${roomId} created/reserved.`);
+            rooms_reserved.set(roomId_, {'creator':logon_id});
+            console.log(`Room ${roomId_} created/reserved.`);
             callback({ result: true, data: { rtpCapabilities: router.rtpCapabilities } });
             
         } catch(e)
         {
+            console.error(`[ERROR] in 'create_room' handler:`, e);
+            if (e instanceof Error) {
+                console.error(e.stack);
+            }
             callback({ result: false, data: e.message });
         }
     })
@@ -202,13 +210,21 @@ io.on('connection', (socket) => {
             {
                 callback({result:false, data:'Not creator'});
             }
-            room.lesson.lessonState = 'Started';
+            if(room.lesson.state !== 'Not started')
+            {
+                return callback({result:false, data:'Already started'})
+            }
+            room.lesson.state = 'Started';
             room.lesson.start_time = Date.now();
             console.log(`lesson_start room: ${roomId}`)
             const res = {start_ts:room.lesson.start_time};
-            socket.to(roomId).emit('lesson_start',  res)
+            socket.to(roomId).emit('lesson_started',  res)
             callback({result:true, data: res});
         } catch (e) {
+            console.error(`[ERROR] in 'lesson_start' handler:`, e);
+            if (e instanceof Error) {
+                console.error(e.stack);
+            }
             callback({ result: false, data: e.message });
         }
     })
@@ -222,15 +238,40 @@ io.on('connection', (socket) => {
             if (!room) return callback({ result: false, data: 'Not in a room' });
             if(room.creator !== logon_id)
             {
-                callback({result:false, data:'Not creator'});
+                return callback({result:false, data:'Not creator'});
             }
-            room.lesson.lessonState = 'Ended';
+            if(room.lesson.state === 'Not started')
+            {
+                return callback({result:false, data:'Not started'});
+            }
+            if(room.lesson.state === 'Ended')
+            {
+                return callback({result:false, data:'Already ended'});
+            }
+            room.lesson.state = 'Ended';
             room.lesson.end_time = Date.now();
             console.log(`lesson_end room: ${roomId}`);
             res = {start_ts:room.lesson.start_time, end_ts: room.lesson.end_time};
-            socket.to(roomId).emit('lesson_end', res);
+            socket.to(roomId).emit('lesson_ended', res);
             callback({result:true, data:res});
         } catch (e) {
+            console.error(`[ERROR] in 'lesson_end' handler:`, e);
+            if (e instanceof Error) {
+                console.error(e.stack);
+            }
+            callback({ result: false, data: e.message });
+        }
+    })
+    socket.on('lesson_state', (data, callback) => {
+        try {
+            const room = rooms[roomId];
+            if (!room) return callback({ result: false, data: 'Not in a room' });
+            callback({result:true, data:{state: room.lesson.state}});
+        } catch(e) {
+            console.error(`[ERROR] in 'lesson_state' handler:`, e);
+            if (e instanceof Error) {
+                console.error(e.stack);
+            }
             callback({ result: false, data: e.message });
         }
     })
@@ -249,6 +290,10 @@ io.on('connection', (socket) => {
             callback({result:true, data:{join_ts:ts}});
             
         } catch(e) {
+            console.error(`[ERROR] in 'log_backup' handler:`, e);
+            if (e instanceof Error) {
+                console.error(e.stack);
+            }
             callback({ result: false, data: e.message });
         }
     });
@@ -257,32 +302,61 @@ io.on('connection', (socket) => {
             if (!roomId || !clientId) {
                 return callback({ result: false, data: 'roomId and clientId are required' });
             }
-            ({log_} = data);
+            let room = rooms[roomId];
+            log_ = data['log'];
             if(!log_)
             {
-                callback({result:false, data:'log is required'});
+                return callback({result:false, data:'log is required'});
             }
+            console.log(JSON.stringify(log_));
             const ts = room.clients.get(clientId).join_ts;
-            room.clients_log.get(clientId).set(ts, {end_ts: Date.now(), log:log_});
+            const perClientLog = room.clients_log.get(clientId);
+            perClientLog.set(ts, { end_ts: Date.now(), log: log_ });
+
             room.clients_log_isComplete.set(clientId, true);
-            not_complete_list = [] 
+            
+            let not_complete_list = [] 
             room.clients_log_isComplete.forEach((value, key) => {
-                if(!value)
+                if(!value && key !== room.creator_client_id)
                 {
+                    console.log(`log_complete not complete ${key}`);
                     not_complete_list.push(key);
                 }
             });
+            
+            
             if(not_complete_list.length  === 0)
             {
-                const res = {full_log: oom.clients_log.get(clientId), lesson_start : room.lesson.start_time, lesson_end: room.lesson.end_time}
+                console.log(`log_compelte all done`);
+                const full_log = {};
+                room.clients_log.forEach((clientLogMap, cid) => {
+                    full_log[cid] = Object.fromEntries(clientLogMap);
+                });
+                const res = {
+                    full_log, 
+                    lesson_start : room.lesson.start_time, 
+                    lesson_end: room.lesson.end_time
+                };
                 socket.to(roomId).emit('log_all_complete', res);
             }
-            callback({result:true, data:{full_log:room.clients_log.get(clientId)}});
+            else
+            {
+                console.log(`log competle not all done`);
+                console.log(JSON.stringify(not_complete_list));
+            }
+            kkk = {full_log: Object.fromEntries(perClientLog) };
+            console.log(`ack log_complete to ${clientId}`); 
+            callback({result: true, data: kkk});
             
         } catch(e) {
+            console.error("log_complete error:", e);
+            if (e instanceof Error) {
+                console.error(e.stack);
+            }
             callback({ result: false, data: e.message });
         }
     })
+
     socket.on('join_room', async (data, callback) => {
         try {
             ({ roomId, clientId } = data);
@@ -324,7 +398,10 @@ io.on('connection', (socket) => {
             console.log(`Client ${clientId} joined room ${roomId} creator: ${(room.creator === logon_id)}`);
             callback({ result: true, data: { rtpCapabilities: room.router.rtpCapabilities , creator: (room.creator === logon_id)} });
         } catch (err) {
-            console.log('Error during join_room:', err);
+            console.error(`[ERROR] in 'join_room' handler:`, err);
+            if (err instanceof Error) {
+                console.error(err.stack);
+            }
             callback({ result: false, data: err.message });
         }
     });
@@ -356,7 +433,10 @@ io.on('connection', (socket) => {
                 data: res_k
             });
         } catch (error) {
-            console.error('Failed to create transport:', error);
+            console.error(`[ERROR] in 'create_transport' handler:`, error);
+            if (error instanceof Error) {
+                console.error(error.stack);
+            }
             callback({ result: false, data: error.message });
         }
     });
@@ -374,7 +454,10 @@ io.on('connection', (socket) => {
             await transport.connect({ dtlsParameters });
             callback({ result: true, data: null });
         } catch (error) {
-            console.error('Failed to connect transport:', error);
+            console.error(`[ERROR] in 'connect_transport' handler:`, error);
+            if (error instanceof Error) {
+                console.error(error.stack);
+            }
             callback({ result: false, data: error.message });
         }
     });
@@ -399,7 +482,10 @@ io.on('connection', (socket) => {
 
             callback({ result: true, data: { id: producer.id } });
         } catch (error) {
-            console.error('Failed to produce:', error);
+            console.error(`[ERROR] in 'produce' handler:`, error);
+            if (error instanceof Error) {
+                console.error(error.stack);
+            }
             callback({ result: false, data: error.message });
         }
     });
@@ -460,6 +546,10 @@ io.on('connection', (socket) => {
                 callback({ result: true, data: updatedGroupData });
             }
         } catch (err) {
+            console.error(`[ERROR] in 'set_group' handler:`, err);
+            if (err instanceof Error) {
+                console.error(err.stack);
+            }
             callback({ result: false, data: err.message });
         }
     });
@@ -470,6 +560,10 @@ io.on('connection', (socket) => {
             data = { groups: Array.from(room.groups.entries()) };
             callback({ result: true, data });
         } catch (err) {
+            console.error(`[ERROR] in 'get_groups' handler:`, err);
+            if (err instanceof Error) {
+                console.error(err.stack);
+            }
             callback({ result: false, data: err.message });
         }
     })
@@ -504,6 +598,10 @@ io.on('connection', (socket) => {
 
             callback({ result: true, data: { deletedGroupId: groupId } });
         } catch (err) {
+            console.error(`[ERROR] in 'del_group' handler:`, err);
+            if (err instanceof Error) {
+                console.error(err.stack);
+            }
             callback({ result: false, data: err.message });
         }
     });
@@ -546,7 +644,10 @@ io.on('connection', (socket) => {
                 }
             });
         } catch (error) {
-            console.error('Failed to consume:', error);
+            console.error(`[ERROR] in 'consume' handler:`, error);
+            if (error instanceof Error) {
+                console.error(error.stack);
+            }
             callback({ result: false, data: error.message });
         }
     });
@@ -560,6 +661,10 @@ io.on('connection', (socket) => {
             }
             callback({ result: true, data: null });
         } catch (err) {
+            console.error(`[ERROR] in 'store_rtp_capabilities' handler:`, err);
+            if (err instanceof Error) {
+                console.error(err.stack);
+            }
             callback({ result: false, data: err.message });
         }
     });
@@ -575,6 +680,10 @@ io.on('connection', (socket) => {
             }
             callback({ result: true, data: null });
         } catch (err) {
+            console.error(`[ERROR] in 'resume_consumer' handler:`, err);
+            if (err instanceof Error) {
+                console.error(err.stack);
+            }
             callback({ result: false, data: err.message });
         }
     });
@@ -634,6 +743,10 @@ io.on('connection', (socket) => {
             }
             callback?.({ result: true, data: { msgId, ts } });
         } catch (err) {
+            console.error(`[ERROR] in 'chat_send' handler:`, err);
+            if (err instanceof Error) {
+                console.error(err.stack);
+            }
             callback?.({ result: false, data: err.message });
         }
     });
@@ -709,6 +822,10 @@ io.on('connection', (socket) => {
                 }
             });
         } catch (err) {
+            console.error(`[ERROR] in 'chat_history' handler:`, err);
+            if (err instanceof Error) {
+                console.error(err.stack);
+            }
             callback?.({ result: false, data: err.message });
         }
     });
@@ -720,6 +837,10 @@ io.on('connection', (socket) => {
             if (!room || !clientData) return callback({ result: false, data: 'Not in a room' });
             callback({ result: true, data: Array.from(room.clients.keys()) })
         } catch (err) {
+            console.error(`[ERROR] in 'get_online_users' handler:`, err);
+            if (err instanceof Error) {
+                console.error(err.stack);
+            }
             callback({ result: false, data: err.message });
         }
     });
@@ -747,7 +868,7 @@ io.on('connection', (socket) => {
             room.clients.delete(clientId);
             console.log(`Client ${clientId} left room ${roomId}`);
 
-            if ((room.clients.size === 0) && (room.lesson.lessonState !== 'Not started')) {
+            if ((room.clients.size === 0) && (room.lesson.state !== 'Not started')) {
                 console.log(`Room ${roomId} is empty, closing router.`);
                 room.router.close();
                 //TODO
@@ -755,7 +876,10 @@ io.on('connection', (socket) => {
                 delete rooms[roomId];
             }
         } catch (err) {
-            console.error('Error during disconnect:', err);
+            console.error(`[ERROR] in 'disconnect' handler:`, err);
+            if (err instanceof Error) {
+                console.error(err.stack);
+            }
         }
     });
 });
