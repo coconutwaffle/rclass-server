@@ -13,7 +13,7 @@ const { join } = require('path');
 const { log } = require('console');
 
 const app = express();
-app.use(express.static(__dirname + '/public'));
+app.use(express.static(__dirname + '/../public'));
 
 const httpsOptions = {
     key: fs.readFileSync(__dirname + '/../certs/privkey.pem'),
