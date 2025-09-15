@@ -502,4 +502,4 @@ function lesson_handler(io, socket, rooms, context){
   });
 }
 
-module.exports = {lesson_handler};
+module.exports = lesson_handler;
