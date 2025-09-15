@@ -5,7 +5,7 @@ const https = require('https');
 const express = require('express');
 const socketIO = require('socket.io');
 const mediasoup = require('mediasoup');
-const config = require('./src/config');
+const config = require('./config');
 const crypto = require("crypto");
 const { json } = require('stream/consumers');
 const e = require('express');
@@ -16,8 +16,8 @@ const app = express();
 app.use(express.static(__dirname + '/public'));
 
 const httpsOptions = {
-    key: fs.readFileSync(__dirname + '/certs/privkey.pem'),
-    cert: fs.readFileSync(__dirname + '/certs/fullchain.pem'),
+    key: fs.readFileSync(__dirname + '/../certs/privkey.pem'),
+    cert: fs.readFileSync(__dirname + '/../certs/fullchain.pem'),
 };
 const httpsServer = https.createServer(httpsOptions, app);
 const io = socketIO(httpsServer, { allowEIO3: true });
