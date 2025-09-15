@@ -397,6 +397,15 @@ io.on('connection', (socket) => {
             console.log(`room.creator: ${room.creator}, logon_id: ${logon_id}, clientId: ${clientId}`);
             console.log(`Client ${clientId} joined room ${roomId} creator: ${(room.creator === logon_id)}`);
             callback({ result: true, data: { rtpCapabilities: room.router.rtpCapabilities , creator: (room.creator === logon_id)} });
+            
+            if(room.lesson.state === 'Started')
+            {
+                console.log(`lesson_start to joined: ${roomId} ${clientId}`);
+                const res = {start_ts:room.lesson.start_time};
+                socket.emit('lesson_started',  res);
+            }
+
+
         } catch (err) {
             console.error(`[ERROR] in 'join_room' handler:`, err);
             if (err instanceof Error) {
