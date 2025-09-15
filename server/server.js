@@ -95,8 +95,18 @@ async function createRoom(creatorId) {
     clients_log_isComplete: new Map(), 
     creator: creatorId, 
     creator_client_id: null, 
-    lesson: {start_time: null, end_time: null, state: 'Not started'} 
-    };
+    lesson: {start_time: null, end_time: null, state: 'Not started'},
+    notified: false,
+    attendancePolicy: {
+        min_part: 0.7,
+        max_noappear: 5 * 60 * 1000,
+        max_late: 8 * 60 * 1000,
+        start_late: 5 * 60 * 1000,
+        ealry_exit: 10 * 60* 1000
+    },
+    merged_log: null,
+    attendance_result: null,
+};
 }
 /**
  * 클라이언트 데이터 생성 함수
@@ -188,6 +198,13 @@ io.on('connection', (socket) => {
             if (!roomId || !clientId) {
                 return callback({ result: false, data: 'roomId and clientId are required' });
             }
+            if(context.logon_id)
+            {
+                if(context.logon_id !== clientId)
+                {
+                    return callback({ result: false, data: 'logon_id, clientId mismatch' });
+                }
+            }
 
             let room = rooms[roomId];
 
@@ -211,8 +228,8 @@ io.on('connection', (socket) => {
             const ts = Date.now();
             const clientData = createClientData({ socket,clientId, ts });
             room.clients.set(clientId, clientData);
-            room.clients_log.set(clientId, new Map());
-            room.clients_log.get(clientId).set(ts, {end_ts: ts, log: {}})
+            if(!room.clients_log.has(clientId))
+                room.clients_log.set(clientId, new Map());
             room.clients_log_isComplete.set(context.clientId, false);
             socket.join(roomId);
             if(room.creator === context.logon_id || room.creator === clientId)
