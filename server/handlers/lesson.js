@@ -1,4 +1,4 @@
-function make_dummy_log(start_ts, end_ts)
+function make_dummy_log()
 {
     return {
             "per_block": [

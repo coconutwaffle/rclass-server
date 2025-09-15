@@ -212,7 +212,7 @@ io.on('connection', (socket) => {
             const clientData = createClientData({ socket,clientId, ts });
             room.clients.set(clientId, clientData);
             room.clients_log.set(clientId, new Map());
-            room.clients_log.get(clientId).set(ts, {end_ts: null, log: {}})
+            room.clients_log.get(clientId).set(ts, {end_ts: ts, log: {}})
             room.clients_log_isComplete.set(context.clientId, false);
             socket.join(roomId);
             if(room.creator === context.logon_id || room.creator === clientId)
