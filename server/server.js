@@ -143,10 +143,11 @@ function createClientData({ socket, clientId, ts }) {
 // --- Socket.IO logic ---
 io.on('connection', (socket) => {
     console.log(`Client connected: ${socket.id}`);
-
-    let clientId = null;
-    let roomId = null;
-    let logon_id = null;
+    const context = {
+        clientId : null,
+        roomId: null,
+        logon_id: null,
+    }
     socket.on('login', (data, callback) => {
         try {
             ({ id, pwd} = data);
@@ -158,7 +159,7 @@ io.on('connection', (socket) => {
                 //TODO DB
                 //지금은 id === pwd 가정
             }
-            logon_id = id;
+            context.logon_id = id;
             callback({ result: true, data: `${id} logged in` });
         } 
         catch (err) {
@@ -172,7 +173,7 @@ io.on('connection', (socket) => {
     socket.on('create_room', async (data, callback) => {
         try {
             //TODO DB
-            if(!logon_id)
+            if(!context.logon_id)
             {
                 return callback({result: false, data:'log on required'});
             }
@@ -185,7 +186,7 @@ io.on('connection', (socket) => {
             {
                 return callback({result: false, data:"room already exists"});
             }
-            rooms_reserved.set(roomId_, {'creator':logon_id});
+            rooms_reserved.set(roomId_, {'creator':context.logon_id});
             console.log(`Room ${roomId_} created/reserved.`);
             callback({ result: true, data: { rtpCapabilities: router.rtpCapabilities } });
             
@@ -200,13 +201,13 @@ io.on('connection', (socket) => {
     })
     socket.on('lesson_start', (data, callback) => {
         try {
-            if(!logon_id)
+            if(!context.logon_id)
             {
                 return callback({result: false, data:'log on required'});
             }
-            const room = rooms[roomId];
+            const room = rooms[context.roomId];
             if (!room) return callback({ result: false, data: 'Not in a room' });
-            if(room.creator !== logon_id)
+            if(room.creator !== context.logon_id)
             {
                 callback({result:false, data:'Not creator'});
             }
@@ -216,9 +217,9 @@ io.on('connection', (socket) => {
             }
             room.lesson.state = 'Started';
             room.lesson.start_time = Date.now();
-            console.log(`lesson_start room: ${roomId}`)
+            console.log(`lesson_start room: ${context.roomId}`)
             const res = {start_ts:room.lesson.start_time};
-            socket.to(roomId).emit('lesson_started',  res)
+            socket.to(context.roomId).emit('lesson_started',  res)
             callback({result:true, data: res});
         } catch (e) {
             console.error(`[ERROR] in 'lesson_start' handler:`, e);
@@ -230,13 +231,13 @@ io.on('connection', (socket) => {
     })
     socket.on('lesson_end', (data, callback) => {
         try {
-            if(!logon_id)
+            if(!context.logon_id)
             {
                 return callback({result: false, data:'log on required'});
             }
-            const room = rooms[roomId];
+            const room = rooms[context.roomId];
             if (!room) return callback({ result: false, data: 'Not in a room' });
-            if(room.creator !== logon_id)
+            if(room.creator !== context.logon_id)
             {
                 return callback({result:false, data:'Not creator'});
             }
@@ -250,9 +251,9 @@ io.on('connection', (socket) => {
             }
             room.lesson.state = 'Ended';
             room.lesson.end_time = Date.now();
-            console.log(`lesson_end room: ${roomId}`);
+            console.log(`lesson_end room: ${context.roomId}`);
             res = {start_ts:room.lesson.start_time, end_ts: room.lesson.end_time};
-            socket.to(roomId).emit('lesson_ended', res);
+            socket.to(context.roomId).emit('lesson_ended', res);
             callback({result:true, data:res});
         } catch (e) {
             console.error(`[ERROR] in 'lesson_end' handler:`, e);
@@ -264,7 +265,7 @@ io.on('connection', (socket) => {
     })
     socket.on('lesson_state', (data, callback) => {
         try {
-            const room = rooms[roomId];
+            const room = rooms[context.roomId];
             if (!room) return callback({ result: false, data: 'Not in a room' });
             callback({result:true, data:{state: room.lesson.state}});
         } catch(e) {
@@ -277,7 +278,7 @@ io.on('connection', (socket) => {
     })
     socket.on('log_backup', (data, callback) => {
         try {
-            if (!roomId || !clientId) {
+            if (!context.roomId || !context.clientId) {
                 return callback({ result: false, data: 'roomId and clientId are required'});
             }
             ({log_} = data);
@@ -285,8 +286,8 @@ io.on('connection', (socket) => {
             {
                 callback({result:false, data:'log is required'});
             }
-            const ts = room.clients.get(clientId).join_ts;
-            room.clients_log.get(clientId).set(ts, {end_ts: Date.now(), log:log_});
+            const ts = room.clients.get(context.clientId).join_ts;
+            room.clients_log.get(context.clientId).set(ts, {end_ts: Date.now(), log:log_});
             callback({result:true, data:{join_ts:ts}});
             
         } catch(e) {
@@ -299,21 +300,21 @@ io.on('connection', (socket) => {
     });
     socket.on('log_complete', (data, callback) => {
         try {
-            if (!roomId || !clientId) {
+            if (!context.roomId || !context.clientId) {
                 return callback({ result: false, data: 'roomId and clientId are required' });
             }
-            let room = rooms[roomId];
+            let room = rooms[context.roomId];
             log_ = data['log'];
             if(!log_)
             {
                 return callback({result:false, data:'log is required'});
             }
             console.log(JSON.stringify(log_));
-            const ts = room.clients.get(clientId).join_ts;
-            const perClientLog = room.clients_log.get(clientId);
+            const ts = room.clients.get(context.clientId).join_ts;
+            const perClientLog = room.clients_log.get(context.clientId);
             perClientLog.set(ts, { end_ts: Date.now(), log: log_ });
 
-            room.clients_log_isComplete.set(clientId, true);
+            room.clients_log_isComplete.set(context.clientId, true);
             
             let not_complete_list = [] 
             room.clients_log_isComplete.forEach((value, key) => {
@@ -337,7 +338,7 @@ io.on('connection', (socket) => {
                     lesson_start : room.lesson.start_time, 
                     lesson_end: room.lesson.end_time
                 };
-                socket.to(roomId).emit('log_all_complete', res);
+                socket.to(context.roomId).emit('log_all_complete', res);
             }
             else
             {
@@ -345,7 +346,7 @@ io.on('connection', (socket) => {
                 console.log(JSON.stringify(not_complete_list));
             }
             kkk = {full_log: Object.fromEntries(perClientLog) };
-            console.log(`ack log_complete to ${clientId}`); 
+            console.log(`ack log_complete to ${context.clientId}`); 
             callback({result: true, data: kkk});
             
         } catch(e) {
@@ -384,19 +385,19 @@ io.on('connection', (socket) => {
             }
 
             const ts = Date.now();
-            const clientData = createClientData({ socket, clientId, ts });
+            const clientData = createClientData({ socket,clientId, ts });
             room.clients.set(clientId, clientData);
             room.clients_log.set(clientId, new Map());
             room.clients_log.get(clientId).set(ts, {end_ts: null, log: {}})
-            room.clients_log_isComplete.set(clientId, false);
+            room.clients_log_isComplete.set(context.clientId, false);
             socket.join(roomId);
-            if(room.creator === logon_id || room.creator === clientId)
+            if(room.creator === context.logon_id || room.creator === clientId)
             {
                 room.creator_client_id = clientId;
             }
-            console.log(`room.creator: ${room.creator}, logon_id: ${logon_id}, clientId: ${clientId}`);
-            console.log(`Client ${clientId} joined room ${roomId} creator: ${(room.creator === logon_id)}`);
-            callback({ result: true, data: { rtpCapabilities: room.router.rtpCapabilities , creator: (room.creator === logon_id)} });
+            console.log(`room.creator: ${room.creator}, logon_id: ${context.logon_id}, clientId: ${clientId}`);
+            console.log(`Client ${clientId} joined room ${roomId} creator: ${(room.creator === context.logon_id)}`);
+            callback({ result: true, data: { rtpCapabilities: room.router.rtpCapabilities , creator: (room.creator === context.logon_id)} });
             
             if(room.lesson.state === 'Started')
             {
@@ -404,7 +405,8 @@ io.on('connection', (socket) => {
                 const res = {start_ts:room.lesson.start_time};
                 socket.emit('lesson_started',  res);
             }
-
+            context.clientId = clientId;
+            context.roomId = roomId;
 
         } catch (err) {
             console.error(`[ERROR] in 'join_room' handler:`, err);
@@ -417,7 +419,7 @@ io.on('connection', (socket) => {
 
     socket.on('create_transport', async (data, callback) => {
         try {
-            const room = rooms[roomId];
+            const room = rooms[context.roomId];
             if (!room) return callback({ result: false, data: 'Not in a room' });
 
             const transport = await room.router.createWebRtcTransport({
@@ -428,7 +430,7 @@ io.on('connection', (socket) => {
                 enableTcp: true,
             });
 
-            const clientData = room.clients.get(clientId);
+            const clientData = room.clients.get(context.clientId);
             clientData.transports.set(transport.id, transport);
             const res_k = {
                 id: transport.id,
@@ -453,13 +455,13 @@ io.on('connection', (socket) => {
     socket.on('connect_transport', async (data, callback) => {
         try {
             const { transportId, dtlsParameters } = data;
-            const room = rooms[roomId];
-            const clientData = room.clients.get(clientId);
+            const room = rooms[context.roomId];
+            const clientData = room.clients.get(context.clientId);
             if (!room || !clientData) return callback({ result: false, data: 'Not in a room' });
 
             const transport = clientData.transports.get(transportId);
             if (!transport) return callback({ result: false, data: 'Transport not found' });
-            console.log(`[conntect_transport] roomId: ${roomId} clientId: ${clientId}`);
+            console.log(`[conntect_transport] roomId: ${context.roomId} clientId: ${context.clientId}`);
             await transport.connect({ dtlsParameters });
             callback({ result: true, data: null });
         } catch (error) {
@@ -474,8 +476,8 @@ io.on('connection', (socket) => {
     socket.on('produce', async (data, callback) => {
         try {
             const { transportId, kind, rtpParameters } = data;
-            const room = rooms[roomId];
-            const clientData = room.clients.get(clientId);
+            const room = rooms[context.roomId];
+            const clientData = room.clients.get(context.clientId);
             if (!room || !clientData) return callback({ result: false, data: 'Not in a room' });
 
             const transport = clientData.transports.get(transportId);
@@ -502,8 +504,8 @@ io.on('connection', (socket) => {
     socket.on('set_group', (data, callback) => {
         try {
             const { groupId, video_id, audio_id } = data;
-            const room = rooms[roomId];
-            const clientData = room.clients.get(clientId);
+            const room = rooms[context.roomId];
+            const clientData = room.clients.get(context.clientId);
 
             if (!room || !clientData) {
                 return callback({ result: false, data: 'Not in a room' });
@@ -520,14 +522,14 @@ io.on('connection', (socket) => {
                     groupId: newGroupId,
                     video_id: final_video_id,
                     audio_id: final_audio_id,
-                    clientId
+                    clientId: context.clientId
                 };
 
                 room.groups.set(newGroupId, groupData);
                 clientData.groups.set(newGroupId, groupData);
 
-                console.log(`Group ${newGroupId} CREATED for client ${clientId}:`, groupData);
-                socket.to(roomId).emit('update_group_one', { group_id: newGroupId, mode: 'create', data: groupData });
+                console.log(`Group ${newGroupId} CREATED for client ${context.clientId}:`, groupData);
+                socket.to(context.roomId).emit('update_group_one', { group_id: newGroupId, mode: 'create', data: groupData });
                 callback({ result: true, data: groupData });
             }
             // Case 2: Edit an existing group
@@ -537,7 +539,7 @@ io.on('connection', (socket) => {
                 if (!groupToEdit) {
                     return callback({ result: false, data: `Group with ID ${groupId} not found.` });
                 }
-                if (groupToEdit.clientId !== clientId) {
+                if (groupToEdit.clientId !== context.clientId) {
                     return callback({ result: false, data: 'Not authorized to edit this group.' });
                 }
 
@@ -550,8 +552,8 @@ io.on('connection', (socket) => {
                 room.groups.set(groupId, updatedGroupData);
                 clientData.groups.set(groupId, updatedGroupData); // Also update the client's own map
 
-                console.log(`Group ${groupId} EDITED by client ${clientId}:`, updatedGroupData);
-                socket.to(roomId).emit('update_group_one', { group_id: groupId, mode: 'edit', data: updatedGroupData });
+                console.log(`Group ${groupId} EDITED by client ${context.clientId}:`, updatedGroupData);
+                socket.to(context.roomId).emit('update_group_one', { group_id: groupId, mode: 'edit', data: updatedGroupData });
                 callback({ result: true, data: updatedGroupData });
             }
         } catch (err) {
@@ -564,8 +566,8 @@ io.on('connection', (socket) => {
     });
     socket.on('get_groups', (data, callback) => {
         try {
-            const room = rooms[roomId];
-            const clientData = room.clients.get(clientId);
+            const room = rooms[context.roomId];
+            const clientData = room.clients.get(context.clientId);
             data = { groups: Array.from(room.groups.entries()) };
             callback({ result: true, data });
         } catch (err) {
@@ -579,8 +581,8 @@ io.on('connection', (socket) => {
     socket.on('del_group', (data, callback) => {
         try {
             const { groupId } = data;
-            const room = rooms[roomId];
-            const clientData = room.clients.get(clientId);
+            const room = rooms[context.roomId];
+            const clientData = room.clients.get(context.clientId);
 
             if (!room || !clientData) {
                 return callback({ result: false, data: 'Not in a room' });
@@ -592,7 +594,7 @@ io.on('connection', (socket) => {
                 return callback({ result: false, data: `Group with ID ${groupId} not found.` });
             }
 
-            if (groupToDelete.clientId !== clientId) {
+            if (groupToDelete.clientId !== context.clientId) {
                 return callback({ result: false, data: 'Not authorized to delete this group.' });
             }
 
@@ -600,10 +602,10 @@ io.on('connection', (socket) => {
             room.groups.delete(groupId);
             clientData.groups.delete(groupId);
 
-            console.log(`Group ${groupId} DELETED by client ${clientId}`);
+            console.log(`Group ${groupId} DELETED by client ${context.clientId}`);
 
             // Notify everyone in the room
-            socket.to(roomId).emit('update_group_one', { group_id: groupId, mode: 'delete', data: groupToDelete });
+            socket.to(context.roomId).emit('update_group_one', { group_id: groupId, mode: 'delete', data: groupToDelete });
 
             callback({ result: true, data: { deletedGroupId: groupId } });
         } catch (err) {
@@ -618,8 +620,8 @@ io.on('connection', (socket) => {
     socket.on('consume', async (data, callback) => {
         try {
             const { producerId, transportId } = data;
-            const room = rooms[roomId];
-            const clientData = room.clients.get(clientId);
+            const room = rooms[context.roomId];
+            const clientData = room.clients.get(context.clientId);
             if (!room || !clientData) return callback({ result: false, data: 'Not in a room' });
 
             const transport = clientData.transports.get(transportId);
@@ -663,8 +665,8 @@ io.on('connection', (socket) => {
 
     socket.on('store_rtp_capabilities', (data, callback) => {
         try {
-            const room = rooms[roomId];
-            const clientData = room.clients.get(clientId);
+            const room = rooms[context.roomId];
+            const clientData = room.clients.get(context.clientId);
             if (clientData) {
                 clientData.rtpCapabilities = data.rtpCapabilities;
             }
@@ -681,8 +683,8 @@ io.on('connection', (socket) => {
     socket.on('resume_consumer', async (data, callback) => {
         try {
             const { consumerId } = data;
-            const room = rooms[roomId];
-            const clientData = room.clients.get(clientId);
+            const room = rooms[context.roomId];
+            const clientData = room.clients.get(context.clientId);
             const consumer = clientData.consumers.get(consumerId);
             if (consumer) {
                 await consumer.resume();
@@ -699,7 +701,7 @@ io.on('connection', (socket) => {
 
     socket.on("chat_send", async (data, callback) => {
         try {
-            const room = rooms[roomId];
+            const room = rooms[context.roomId];
             if (!room) return callback?.({ result: false, data: "Not in a room" });
 
             const msgText = String(data?.msg ?? "");
@@ -711,7 +713,7 @@ io.on('connection', (socket) => {
 
             const ts = Date.now();
             const seq = nextSeq(room);
-            const msgId = `${roomId}-${seq}`;
+            const msgId = `${context.roomId}-${seq}`;
 
             let recipients = [];
             const chat = {
@@ -721,10 +723,10 @@ io.on('connection', (socket) => {
                 msg: msgText,
                 mode,
                 send_to: recipients,
-                from: clientId,
+                from: context.clientId,
             };
             if (mode !== "ALL") {
-                const validTargets = new Set([clientId]);
+                const validTargets = new Set([context.clientId]);
                 for (const cid of sendTo) {
                     if (room.clients.has(cid)) validTargets.add(cid);
                 }
@@ -740,13 +742,13 @@ io.on('connection', (socket) => {
 
             room.chat_log.push(chat);
             if (mode === "ALL") {
-                console.log(`[${roomId}][${msgId}] ${clientId} to ALL: ${msgText}`);
-                io.to(roomId).emit("chat_message", chat);
+                console.log(`[${context.roomId}][${msgId}] ${context.clientId} to ALL: ${msgText}`);
+                io.to(context.roomId).emit("chat_message", chat);
             }
             else {
                 for (const cid of recipients) {
                     const entry = room.clients.get(cid);
-                    console.log(`[${roomId}][${msgId}] ${clientId} to ${cid} (SECRET): ${msgText}`);
+                    console.log(`[${context.roomId}][${msgId}] ${context.clientId} to ${cid} (SECRET): ${msgText}`);
                     entry?.socket?.emit("chat_message", chat);
                 }
             }
@@ -764,13 +766,13 @@ io.on('connection', (socket) => {
     // 히스토리 요청
     socket.on("chat_history", async (data, callback) => {
         try {
-            const room = rooms[roomId];
+            const room = rooms[context.roomId];
             if (!room) return callback?.({ result: false, data: "not_in_room" });
 
             // 0) 권한 필터 통과 메시지 배열(이미 seq 오름차순이라고 가정)
             const visible = room.chat_log.filter(m =>
                 m.mode === "ALL" ||
-                (m.mode === "SECRET" && (m.from === clientId || (Array.isArray(m.send_to) && m.send_to.includes(clientId))))
+                (m.mode === "SECRET" && (m.from === context.clientId || (Array.isArray(m.send_to) && m.send_to.includes(context.clientId))))
             );
 
             const DEFAULT_WINDOW = 50;
@@ -841,8 +843,8 @@ io.on('connection', (socket) => {
 
     socket.on('get_online_users', (data, callback) => {
         try {
-            const room = rooms[roomId];
-            const clientData = room.clients.get(clientId);
+            const room = rooms[context.roomId];
+            const clientData = room.clients.get(context.clientId);
             if (!room || !clientData) return callback({ result: false, data: 'Not in a room' });
             callback({ result: true, data: Array.from(room.clients.keys()) })
         } catch (err) {
@@ -856,33 +858,33 @@ io.on('connection', (socket) => {
     socket.on('disconnect', () => {
         try {
             console.log(`Client disconnected: ${socket.id}`);
-            if (!roomId || !clientId) return;
+            if (!context.roomId || !context.clientId) return;
 
-            const room = rooms[roomId];
+            const room = rooms[context.roomId];
             if (!room) return;
 
-            const clientData = room.clients.get(clientId);
+            const clientData = room.clients.get(context.clientId);
             if (!clientData) return;
 
-            room.clients_log_isComplete.set(clientId, true);
+            room.clients_log_isComplete.set(context.clientId, true);
             // Close all resources
             clientData.producers.forEach(p => p.close());
             clientData.consumers.forEach(c => c.close());
             clientData.transports.forEach(t => t.close());
             clientData.groups.forEach((groupData, groupId) => {
                 room.groups.delete(groupId);
-                socket.to(roomId).emit('update_group_one', { group_id: groupId, mode: 'delete', data: groupData });
+                socket.to(context.roomId).emit('update_group_one', { group_id: groupId, mode: 'delete', data: groupData });
             });
 
-            room.clients.delete(clientId);
-            console.log(`Client ${clientId} left room ${roomId}`);
+            room.clients.delete(context.clientId);
+            console.log(`Client ${context.clientId} left room ${context.roomId}`);
 
             if ((room.clients.size === 0) && (room.lesson.state !== 'Not started')) {
-                console.log(`Room ${roomId} is empty, closing router.`);
+                console.log(`Room ${context.roomId} is empty, closing router.`);
                 room.router.close();
                 //TODO
                 // room.chat_log, clients_log, room.lesson.start_time, room.lesson.end_time  을 backup
-                delete rooms[roomId];
+                delete rooms[context.roomId];
             }
         } catch (err) {
             console.error(`[ERROR] in 'disconnect' handler:`, err);
