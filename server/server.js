@@ -116,15 +116,15 @@ async function createRoom(creatorId) {
  * @param {number} params.ts - 입장 타임스탬프
  * @returns {object} ClientData
  */
-function createClientData({ socket, clientId, ts }) {
+function createClientData({ socket, context, ts }) {
   return {
     socket,
-    clientId,
+    context,
     transports: new Map(),
     producers: new Map(),
     consumers: new Map(),
     groups: new Map(),
-    join_ts: ts,
+    log_start: ts,
   };
 }
 
@@ -135,6 +135,7 @@ io.on('connection', (socket) => {
         clientId : null,
         roomId: null,
         logon_id: null,
+        log_start: null,
     }
     lesson_handler(io, socket, rooms, context);
     group_handler(io, socket, rooms, context);
@@ -226,7 +227,9 @@ io.on('connection', (socket) => {
             }
 
             const ts = Date.now();
-            const clientData = createClientData({ socket,clientId, ts });
+            context.clientId = clientId;
+            context.roomId = roomId;
+            const clientData = createClientData({ socket, context, ts });
             room.clients.set(clientId, clientData);
             if(!room.clients_log.has(clientId))
                 room.clients_log.set(clientId, new Map());
@@ -243,11 +246,10 @@ io.on('connection', (socket) => {
             if(room.lesson.state === 'Started')
             {
                 console.log(`lesson_start to joined: ${roomId} ${clientId}`);
-                const res = {start_ts:room.lesson.start_time};
+                context.log_start = Date.now();
+                const res = {start_ts:context.log_start};
                 socket.emit('lesson_started',  res);
             }
-            context.clientId = clientId;
-            context.roomId = roomId;
 
         } catch (err) {
             console.error(`[ERROR] in 'join_room' handler:`, err);

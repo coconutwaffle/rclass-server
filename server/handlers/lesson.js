@@ -112,6 +112,9 @@ function mergeClientLogsWithLessonTime(clientLogs, lessonStart, lessonEnd) {
     total_open: 0,
   };
 
+  let firstAppear_ms = null;
+  let lastAppear_ms = null;
+
   for (const [tsStr, entry] of Object.entries(clientLogs)) {
     const sessionAbsStart = parseInt(tsStr, 10);
     const log = entry.log;
@@ -133,8 +136,17 @@ function mergeClientLogsWithLessonTime(clientLogs, lessonStart, lessonEnd) {
         open_ratio: block.open_ratio,
         total_frames: block.total_frames,
       });
+
+      // 첫 등장/마지막 등장 기록
+      if (block.label === "OPEN" && block.total_frames > 0) {
+        if (firstAppear_ms === null) {
+          firstAppear_ms = relStart;
+        }
+        lastAppear_ms = relEnd;
+      }
     }
 
+    // summary 합산
     const s = log.summary;
     summary.blocks += s.blocks;
     summary.no_camera_blocks += s.no_camera_blocks;
@@ -197,6 +209,8 @@ function mergeClientLogsWithLessonTime(clientLogs, lessonStart, lessonEnd) {
   return {
     per_block: filledBlocks,
     summary,
+    firstAppear_ms,
+    lastAppear_ms,
   };
 }
 
@@ -308,11 +322,24 @@ function checkAttendance(io, socket, room, context) {
       lesson_end: end_ts,
       results,
     };
-
     room.attendance_result = response;
     console.log("[checkAttendance] result:", JSON.stringify(response, null, 2));
-    io.to(context.roomId).emit("attendance_checked", response);
-
+    for(const [cid, clientData] of room.clients)
+    {
+      if(cid !== room.creator_client_id)
+      {
+        response.results = {[cid]: results[cid]};
+      } else
+      {
+        response.results = results;
+      }
+      const reciverData = room.clients.get(cid);
+      if(reciverData)
+      {
+        reciverData.socket.emit("attendance_checked", response);
+      }
+    }
+    response.results = results;
     return response;
   }
   return null;
@@ -342,6 +369,11 @@ function lesson_handler(io, socket, rooms, context){
             const res = {start_ts:room.lesson.start_time};
             socket.to(context.roomId).emit('lesson_started',  res)
             callback({result:true, data: res});
+            for(const [cid, clientData] of room.clients)
+            {
+              console.log(`[lesson_handler] ${clientData.context}`);
+              clientData.context.log_start = room.lesson.start_time;
+            }
         } catch (e) {
             console.error(`[ERROR] in 'lesson_start' handler:`, e);
             if (e instanceof Error) {
@@ -408,10 +440,10 @@ function lesson_handler(io, socket, rooms, context){
                 console.log('No log to backup');
                 return callback({result:false, data:'log is required'});
             }
-            const ts = room.clients.get(context.clientId).join_ts;
+            const ts = context.log_start;
             const perClientLog = room.clients_log.get(context.clientId);
             perClientLog.set(ts, { end_ts: Date.now(), log: log_ });
-            callback({result:true, data:{join_ts:ts}});
+            callback({result:true, data:{log_start:ts}});
             console.log("log_backup all " + JSON.stringify(
             Object.fromEntries(
                 [...room.clients_log].map(([cid, logs]) => [cid, Object.fromEntries(logs)])
@@ -436,7 +468,7 @@ function lesson_handler(io, socket, rooms, context){
                 return callback({result:false, data:'log is required'});
             }
             console.log(JSON.stringify(log_));
-            const ts = room.clients.get(context.clientId).join_ts;
+            const ts = context.log_start;
             const perClientLog = room.clients_log.get(context.clientId);
             perClientLog.set(ts, { end_ts: Date.now(), log: log_ });
 
@@ -500,6 +532,40 @@ function lesson_handler(io, socket, rooms, context){
       return callback({ result: false, data: e.message });
     }
   });
+  socket.on('attendance_result', (data, callback) =>{
+    try{
+      const room = rooms[context.roomId];
+      if (!room) return callback({ result: false, data: "Not in a room" });
+      target_ = data['user'];
+      if(!target_)
+      {
+        return callback({ result: false, data: 'user requried' });
+      }
+      if(target_ !== context.clientId || context.clientId !== room.creator_client_id)
+      {
+        return callback({ result: false, data: 'Not permited' });
+      }
+      full_log = room.attendance_result;
+      lesson_end = full_log.lesson_end;
+      lesson_start = full_log.lesson_start;
+      lesson_end = full_log.lesson_end;
+      result = {
+        lesson_start,
+        lesson_end,
+        'results':{
+          target_: full_log.results[target_]
+        }
+      }
+      return callback({ result: false, data: result});
+      
+    } catch (e) {
+      console.error("[ERROR] in 'attendance_override':", e);
+      if (e instanceof Error) {
+        console.error(e.stack);
+      }
+    }
+
+  })
 }
 
 module.exports = lesson_handler;
