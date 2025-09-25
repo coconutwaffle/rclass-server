@@ -2,6 +2,13 @@
 const config = {
   domain: 'test.coconutwaffle.org',
   port: 7000,
+  
+  // DB
+  db_host: 'postgres',
+  db_port: 5432,
+  db_user: 'rclass_user',
+  db_pass: 'rclass_pass',
+  db_name: 'rclass',
 
   mediasoup: {
     // worker 공통

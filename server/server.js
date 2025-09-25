@@ -10,7 +10,7 @@ const chat_handler = require('./handlers/chat');
 const stream_handler = require('./handlers/stream');
 const group_handler = require('./handlers/group');
 const lesson_handler = require('./handlers/lesson');
-
+const {LogIn, isLoggedIn, getLogOnId, isRoomReserved, ReservedRoomInfo, room_handler} = require('./handlers/db');
 const app = express();
 app.use(express.static(__dirname + '/../public'));
 
@@ -29,7 +29,6 @@ httpsServer.listen(config.port, () => {
 let workers = [];
 let nextWorkerIdx = 0;
 const rooms = {};
-const rooms_reserved = new Map();
 
 async function runMediasoupWorkers() {
     const numWorkers = os.cpus().length;
@@ -80,33 +79,86 @@ runMediasoupWorkers();
  *   }
  * }>}
  */
-async function createRoom(creatorId) {
-  const worker = getMediasoupWorker();
-  const router = await worker.createRouter({ mediaCodecs: config.mediasoup.router.mediaCodecs });
+async function createRoom(creatorId, roomId, st_time, end_time) {
+    const worker = getMediasoupWorker();
+    const router = await worker.createRouter({ mediaCodecs: config.mediasoup.router.mediaCodecs });
+    let lesson_reserved = { st_time, end_time };
 
-  return { 
-    router, 
-    clients: new Map(), 
-    groups: new Map(), 
-    nextGroupId: 1, 
-    chat_log: [], 
-    last_seq: 0, 
-    clients_log: new Map(), 
-    clients_log_isComplete: new Map(), 
-    creator: creatorId, 
-    creator_client_id: null, 
-    lesson: {start_time: null, end_time: null, state: 'Not started'},
-    notified: false,
-    attendancePolicy: {
-        min_part: 0.7,
-        max_noappear: 5 * 60 * 1000,
-        max_late: 8 * 60 * 1000,
-        start_late: 5 * 60 * 1000,
-        ealry_exit: 10 * 60* 1000
-    },
-    merged_log: null,
-    attendance_result: null,
-};
+    if (st_time && !end_time) {
+        lesson_reserved = {
+        st_time,
+        end_time: st_time + 60 * 60 * 1000 // 기본 1시간
+        };
+    }
+    return {
+        router, 
+        clients: new Map(), 
+        groups: new Map(), 
+        nextGroupId: 1, 
+        chat_log: [], 
+        last_seq: 0, 
+        clients_log: new Map(), 
+        clients_log_isComplete: new Map(), 
+        creator: creatorId, 
+        creator_client_id: null, 
+        lesson: {start_time: null, end_time: null, state: 'Not started'},
+        lesson_reserved,
+        notified: false,
+        attendancePolicy: {
+            min_part: 0.7,
+            max_noappear: 5 * 60 * 1000,
+            start_late: 5 * 60 * 1000,
+            ealry_exit: 10 * 60* 1000
+        },
+        merged_log: null,
+        attendance_result: null,
+        roomId,
+        creator_first_joined,
+    };
+}
+function can_destory_room(io, socket, room, context)
+{
+    let destory_flag = false;
+    if (room.clients.size === 0) {
+        if(room.lesson.state === 'Ended')
+        {
+            destory_flag = true;
+        } else if(room.lesson.state === 'Started'){
+            room.lesson.state === 'Ended'
+            room.lesson.end_time = Date.now();
+            const full_log = {};
+            room.clients_log.forEach((clientLogMap, cid) => {
+                if(cid !== room.creator_client_id)
+                    full_log[cid] = Object.fromEntries(clientLogMap);
+            });
+            room.merged_log = mergeFullLogWithLessonTime(
+                full_log,
+                room.lesson.start_time,
+                room.lesson.end_time
+            );
+            checkAttendance(io, socket, room, context);
+            if(!room.attendance_result)
+            {
+                console.log(`[can_destroy_room] bug: room.attendance_result`);
+            }
+            destory_flag = true
+        } else if(room.lesson.state === 'Not started')
+        {
+            if(room.lesson_reserved.end_time)
+            {
+                if((Date.now() > room.lesson_reserved.end_time))
+                {
+                    destory_flag = true;
+                }
+            } else {
+                destory_flag = true;
+            }
+        } else {
+            console.log(`[can_destroy_room] bug room.lesson.state :${room.lesson.state}`);
+            destory_flag = true
+        }
+    }
+    return destory_flag;
 }
 /**
  * 클라이언트 데이터 생성 함수
@@ -136,24 +188,26 @@ io.on('connection', (socket) => {
         roomId: null,
         logon_id: null,
         log_start: null,
+        logon_mode: null
     }
     lesson_handler(io, socket, rooms, context);
     group_handler(io, socket, rooms, context);
     stream_handler(io, socket, rooms, context, config);
     chat_handler(io, socket, rooms, context);
+    room_handler(io, socket, rooms, context);
     socket.on('login', (data, callback) => {
         try {
             ({ id, pwd} = data);
             if (!id || !pwd) {
                 return callback({ result: false, data: 'id and pwd are required' });
             }
-            if(id !== pwd)
+            if(LogIn(id, pwd, context))
             {
-                //TODO DB
-                //지금은 id === pwd 가정
+                callback({ result: true, data: `${id} logged in` });
+            } else
+            {
+                callback({ result: false, data: `id, pwd incorrect` });
             }
-            context.logon_id = id;
-            callback({ result: true, data: `${id} logged in` });
         } 
         catch (err) {
             console.error(`[ERROR] in 'login' handler:`, err);
@@ -163,45 +217,15 @@ io.on('connection', (socket) => {
             callback({ result: false, data: err.message });
         }
     })
-    socket.on('create_room', async (data, callback) => {
-        try {
-            //TODO DB
-            if(!context.logon_id)
-            {
-                return callback({result: false, data:'log on required'});
-            }
-            roomId_ = data['roomId']
-            if(!roomId_)
-            {
-                return callback({result: false, data:'roomId is required'});
-            }
-            if(rooms.hasOwnProperty(roomId_) || rooms_reserved.has(roomId_))
-            {
-                return callback({result: false, data:"room already exists"});
-            }
-            rooms_reserved.set(roomId_, {'creator':context.logon_id});
-            console.log(`Room ${roomId_} created/reserved.`);
-            callback({ result: true, data: { rtpCapabilities: router.rtpCapabilities } });
-            
-        } catch(e)
-        {
-            console.error(`[ERROR] in 'create_room' handler:`, e);
-            if (e instanceof Error) {
-                console.error(e.stack);
-            }
-            callback({ result: false, data: e.message });
-        }
-    })
-
     socket.on('join_room', async (data, callback) => {
         try {
             ({ roomId, clientId } = data);
             if (!roomId || !clientId) {
                 return callback({ result: false, data: 'roomId and clientId are required' });
             }
-            if(context.logon_id)
+            if(isLoggedIn(context))
             {
-                if(context.logon_id !== clientId)
+                if(getLogOnId(context) !== clientId)
                 {
                     return callback({ result: false, data: 'logon_id, clientId mismatch' });
                 }
@@ -210,13 +234,15 @@ io.on('connection', (socket) => {
             let room = rooms[roomId];
 
             if (!room) {
-                if(rooms_reserved.has(roomId))
+                if(isRoomReserved(roomId))
                 {
                     //TODO DB extend
-                    room = await createRoom(rooms_reserved.get(roomId)['creator']);
-                    rooms_reserved.delete(roomId);
+                    const reserved_room = ReservedRoomInfo(roomId)
+                    room = await createRoom(reserved_room.creator, roomId, reserved_room.lesson_start, reserved_room.lesson_end);
                 } else{
-                    room = await createRoom(clientId);
+                    lesson_start = data['lesson_start'];
+                    lesson_end = data['lesson_end'];
+                    room = await createRoom(clientId, roomId, lesson_start, lesson_end);
                 }
                 rooms[roomId] = room;
                 console.log(`Room ${roomId} created.`);
@@ -235,13 +261,17 @@ io.on('connection', (socket) => {
                 room.clients_log.set(clientId, new Map());
             room.clients_log_isComplete.set(context.clientId, false);
             socket.join(roomId);
-            if(room.creator === context.logon_id || room.creator === clientId)
+            if(room.creator === clientId)
             {
                 room.creator_client_id = clientId;
+                room.creator_first_joined = Date.now();
             }
-            console.log(`room.creator: ${room.creator}, logon_id: ${context.logon_id}, clientId: ${clientId}`);
-            console.log(`Client ${clientId} joined room ${roomId} creator: ${(room.creator === context.logon_id)}`);
-            callback({ result: true, data: { rtpCapabilities: room.router.rtpCapabilities , creator: (room.creator === context.logon_id)} });
+            if(isLoggedIn(context))
+                console.log(`room.creator: ${room.creator}, logon_id: ${getLogOnId(context)}, clientId: ${clientId}`);
+            else
+                console.log(`room.creator: ${room.creator}`);
+            console.log(`Client ${clientId} joined room ${roomId} creator: ${(room.creator === clientId)}`);
+            callback({ result: true, data: { rtpCapabilities: room.router.rtpCapabilities , creator: (room.creator === clientId)} });
             
             if(room.lesson.state === 'Started')
             {
@@ -297,12 +327,13 @@ io.on('connection', (socket) => {
 
             room.clients.delete(context.clientId);
             console.log(`Client ${context.clientId} left room ${context.roomId}`);
-
-            if ((room.clients.size === 0) && (room.lesson.state !== 'Not started')) {
+            const destory_flag = can_destory_room(io, socket, room, context);
+            if(destory_flag)
+            {
                 console.log(`Room ${context.roomId} is empty, closing router.`);
                 room.router.close();
                 //TODO
-                // room.chat_log, clients_log, room.lesson.start_time, room.lesson.end_time  을 backup
+                // room.chat_log, clients_log, room.lesson.start_time, room.lesson.end_time 을 backup
                 delete rooms[context.roomId];
             }
         } catch (err) {

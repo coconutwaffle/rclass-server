@@ -1,0 +1,28 @@
+services:
+  postgres:
+    container_name: rclass-db
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: rclass            # 초기 DB 이름
+      POSTGRES_USER: rclass_user     # 사용자 이름
+      POSTGRES_PASSWORD: rclass_pass # 비밀번호 (원하는 걸로 변경)
+      TZ: Asia/Seoul                 # 타임존
+    volumes:
+      - ./db-data:/var/lib/postgresql/data  # 데이터 영속화
+      # schema.sql은 컨테이너 시작 시 자동 실행됨 (초기 스키마 적용)
+    networks:
+      custom-net:
+        ipv4_address: 172.20.0.30
+
+  adminer:
+    image: adminer:latest
+    container_name: rclass-adminer
+    restart: unless-stopped
+    networks:
+      custom-net:
+        ipv4_address: 172.20.0.31
+
+networks:
+  custom-net:
+    external: true

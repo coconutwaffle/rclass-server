@@ -1,3 +1,4 @@
+const {isLoggedIn, getLogOnId, get_all_students} = require('./db');
 function make_dummy_log()
 {
     return {
@@ -89,14 +90,6 @@ function check_log_complete(io, socket, room, context)
     return false;
 }
 
-function get_all_students(roomId)
-{
-    //TODO DB
-    return [
-        'qml-user',
-        'asdf'
-    ]
-}
 function mergeClientLogsWithLessonTime(clientLogs, lessonStart, lessonEnd) {
   const mergedBlocks = [];
   const summary = {
@@ -308,7 +301,7 @@ function evaluateAttendanceForClients(full_log, lessonStart, lessonEnd, policy, 
 
 // === 모드 2: io/socket/room/context 기반 ===
 function checkAttendance(io, socket, room, context) {
-  if (check_log_complete(io, socket, room, context)) {
+  if (!room.attendance_result) {
     const start_ts = room.lesson.start_time;
     const end_ts = room.lesson.end_time;
     const policy = room.attendancePolicy;
@@ -317,30 +310,34 @@ function checkAttendance(io, socket, room, context) {
     const full_log = room.merged_log?.full_log || {};
     const results = evaluateAttendanceForClients(full_log, start_ts, end_ts, policy, studs, room.creator_client_id);
 
-    const response = {
+    room.attendance_result = {
       lesson_start: start_ts,
       lesson_end: end_ts,
       results,
     };
-    room.attendance_result = response;
-    console.log("[checkAttendance] result:", JSON.stringify(response, null, 2));
+    console.log("[checkAttendance] result:", JSON.stringify(room.attendance_result, null, 2));
+    let reciverData = room.clients.get(room.creator_client_id);
+    if(reciverData)
+    {
+      reciverData.socket.emit("attendance_checked", room.attendance_result);
+    }
     for(const [cid, clientData] of room.clients)
     {
       if(cid !== room.creator_client_id)
       {
-        response.results = {[cid]: results[cid]};
-      } else
-      {
-        response.results = results;
-      }
-      const reciverData = room.clients.get(cid);
-      if(reciverData)
-      {
-        reciverData.socket.emit("attendance_checked", response);
+        const response = {
+          lesson_start: start_ts,
+          lesson_end: end_ts,
+          results: {[cid]: results[cid]},
+        };
+        reciverData = room.clients.get(cid);
+        if(reciverData)
+        {
+          reciverData.socket.emit("attendance_checked", response);
+        }
       }
     }
-    response.results = results;
-    return response;
+    return room.attendance_result;
   }
   return null;
 }
@@ -349,13 +346,13 @@ function checkAttendance(io, socket, room, context) {
 function lesson_handler(io, socket, rooms, context){
     socket.on('lesson_start', (data, callback) => {
         try {
-            if(!context.logon_id)
+            if(!isLoggedIn(context))
             {
                 return callback({result: false, data:'log on required'});
             }
             const room = rooms[context.roomId];
             if (!room) return callback({ result: false, data: 'Not in a room' });
-            if(room.creator !== context.logon_id)
+            if(room.creator !== getLogOnId(context))
             {
                 callback({result:false, data:'Not creator'});
             }
@@ -384,13 +381,13 @@ function lesson_handler(io, socket, rooms, context){
     })
     socket.on('lesson_end', (data, callback) => {
         try {
-            if(!context.logon_id)
+            if(!isLoggedIn(context))
             {
                 return callback({result: false, data:'log on required'});
             }
             const room = rooms[context.roomId];
             if (!room) return callback({ result: false, data: 'Not in a room' });
-            if(room.creator !== context.logon_id)
+            if(room.creator !== getLogOnId(context))
             {
                 return callback({result:false, data:'Not creator'});
             }
@@ -492,7 +489,7 @@ function lesson_handler(io, socket, rooms, context){
       const room = rooms[context.roomId];
       if (!room) return callback({ result: false, data: "Not in a room" });
 
-      if (room.creator !== context.logon_id) {
+      if (room.creator !== getLogOnId(context)) {
         return callback({ result: false, data: "Not creator" });
       }
 
