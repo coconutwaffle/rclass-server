@@ -1,4 +1,4 @@
-module.exports = (io, socket, rooms, context) => {
+function group_handler(io, socket, rooms, context) {
     socket.on('set_group', (data, callback) => {
         try {
             const { groupId, video_id, audio_id } = data;
@@ -115,3 +115,5 @@ module.exports = (io, socket, rooms, context) => {
         }
     });
 }
+
+export default group_handler;

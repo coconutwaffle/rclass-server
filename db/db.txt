@@ -1,0 +1,86 @@
+CREATE TYPE attendance_status AS ENUM ('present','late','absent','early_exit');
+CREATE TYPE chat_mode AS ENUM ('ALL','PRIVATE');
+CREATE TYPE weekday_enum AS ENUM ('MON','TUE','WED','THU','FRI','SAT','SUN');
+CREATE TYPE account_type_enum AS ENUM ('member','guest');
+
+
+
+account 테이블
+id, pk, uuid
+account_id, str, guest 인 경우 null 가능
+name, str, not null
+pwd, guest login시 null 가능. hash로 저장.
+account_type, 'member' or 'guest' enum 타입.
+
+
+classes 테이블.
+class_id, pk, uuid
+class_name, str
+alive, bool
+creator_id, FOREIGN KEY account 테이블 id
+alive은 기본 false,
+alive를 true로 전환할때 이미 같은 이름이 alive이면 fail.
+min_part, double //출결 판정 정책
+max_noappear, ms 초 //출결 판정 정책
+start_late, ms 초 //출결 판정 정책
+early_exit, ms 초 //출결 판정 정책
+
+
+lesson_times
+lesson_time_id pk, uuid
+class_id, FOREIGN KEY classes 테이블 class_id
+week_day, 월~일 중에 하나.
+start_time, 24시간 기준 시작시간
+end_time, 24시간 기준 종료시간
+timezone 타임존 선택 값.
+
+
+class_students 테이블
+class_id, FOREIGN KEY classes 테이블 class_id
+student_name, str, pk
+
+
+rooms
+room_id pk, uuid
+session_no int 
+creator_id, FOREIGN KEY account 테이블 id
+lesson_start, ms 초 즉 int
+lesson_end, ms 초 즉 int
+class_name, FOREIGN KEY classes 테이블 class_id
+min_part, double //출결 판정 정책
+max_noappear, ms 초 //출결 판정 정책
+start_late, ms 초 //출결 판정 정책
+early_exit, ms 초 //출결 판정 정책 classes 테이블에 있는 정책으로 room이 생성되었을 때의 sanpshot, 정책 자체는 실시간 변경이 가능하므로.
+
+
+
+room_attendees
+room_id, FOREIGN KEY rooms 테이블 room_id
+attendee_id, FOREIGN KEY account 테이블 id
+
+
+room_students_snapshot
+room_id, FOREIGN KEY rooms 테이블 room_id
+student_name, str, pk
+
+
+
+attendance_logs
+room_id, FOREIGN KEY rooms 테이블 room_id
+attendee_id, FOREIGN KEY account 테이블 id
+log_data jsonb //출결 판정 데이터 근거/ camera appear time 등...
+
+
+chat_logs
+chat_id, pk, uuid
+room_id, FOREIGN KEY rooms 테이블 room_id
+sender_id, FOREIGN KEY account 테이블 id
+chat_seq, int
+msg_id, varchar(225)
+ts, ms 초
+msg, TEXT
+mode, chat_mode DEFAULT 'ALL'
+
+chat_target
+chat_id, FOREIGN KEY chat_logs 테이블 chat_id
+target_id, FOREIGN KEY account 테이블 id

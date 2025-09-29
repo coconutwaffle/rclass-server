@@ -1,4 +1,4 @@
-module.exports = (io, socket, rooms, context, config) => {
+function group_handler(io, socket, rooms, context, config) {
     socket.on('store_rtp_capabilities', (data, callback) => {
         try {
             const room = rooms[context.roomId];
@@ -161,3 +161,4 @@ module.exports = (io, socket, rooms, context, config) => {
         }
     });
 }
+export default group_handler;

@@ -4,7 +4,7 @@ const config = {
   port: 7000,
   
   // DB
-  db_host: 'postgres',
+  db_host: '172.20.0.30',
   db_port: 5432,
   db_user: 'rclass_user',
   db_pass: 'rclass_pass',
@@ -52,4 +52,4 @@ const config = {
   },
 };
 
-module.exports = config;
+export default config;

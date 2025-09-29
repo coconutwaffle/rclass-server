@@ -10,7 +10,7 @@ services:
       TZ: Asia/Seoul                 # 타임존
     volumes:
       - ./db-data:/var/lib/postgresql/data  # 데이터 영속화
-      # schema.sql은 컨테이너 시작 시 자동 실행됨 (초기 스키마 적용)
+      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro # schema.sql은 컨테이너 시작 시 자동 실행됨 (초기 스키마 적용)
     networks:
       custom-net:
         ipv4_address: 172.20.0.30

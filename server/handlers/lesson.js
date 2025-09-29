@@ -1,4 +1,5 @@
-const {isLoggedIn, getLogOnId, get_all_students} = require('./db');
+import {get_all_students} from './room.js';
+import {isLoggedIn, getLogOnId} from './account.js';
 function make_dummy_log()
 {
     return {
@@ -28,7 +29,7 @@ function make_dummy_log()
             }
     }
 }
-function check_log_complete(io, socket, room, context)
+async function check_log_complete(io, socket, room, context)
 {
     try {
         let not_complete_list = [] 
@@ -71,7 +72,7 @@ function check_log_complete(io, socket, room, context)
                 room.notified = true;
                 console.log("emit all " + JSON.stringify(room.merged_log, null, 2));
                 io.to(context.roomId).emit("log_all_complete", room.merged_log);
-                checkAttendance(io, socket, room, context);
+                await checkAttendance(io, socket, room, context);
                 console.log(`emit done roomid: ${context.roomId}`);
             }
             return true;
@@ -208,7 +209,7 @@ function mergeClientLogsWithLessonTime(clientLogs, lessonStart, lessonEnd) {
 }
 
 
-function mergeFullLogWithLessonTime(full_log, lessonStart, lessonEnd) {
+export function mergeFullLogWithLessonTime(full_log, lessonStart, lessonEnd) {
   const mergedLogs = {};
   for (const [clientId, clientLogs] of Object.entries(full_log)) {
     mergedLogs[clientId] = mergeClientLogsWithLessonTime(
@@ -300,12 +301,12 @@ function evaluateAttendanceForClients(full_log, lessonStart, lessonEnd, policy, 
 }
 
 // === 모드 2: io/socket/room/context 기반 ===
-function checkAttendance(io, socket, room, context) {
+export async function checkAttendance(io, socket, room, context) {
   if (!room.attendance_result) {
     const start_ts = room.lesson.start_time;
     const end_ts = room.lesson.end_time;
     const policy = room.attendancePolicy;
-    const studs = get_all_students(context.roomId);
+    const studs = await get_all_students(room);
 
     const full_log = room.merged_log?.full_log || {};
     const results = evaluateAttendanceForClients(full_log, start_ts, end_ts, policy, studs, room.creator_client_id);
@@ -343,7 +344,7 @@ function checkAttendance(io, socket, room, context) {
 }
 
 
-function lesson_handler(io, socket, rooms, context){
+export function lesson_handler(io, socket, rooms, context){
     socket.on('lesson_start', (data, callback) => {
         try {
             if(!isLoggedIn(context))
@@ -379,7 +380,7 @@ function lesson_handler(io, socket, rooms, context){
             callback({ result: false, data: e.message });
         }
     })
-    socket.on('lesson_end', (data, callback) => {
+    socket.on('lesson_end', async (data, callback) => {
         try {
             if(!isLoggedIn(context))
             {
@@ -404,7 +405,7 @@ function lesson_handler(io, socket, rooms, context){
             console.log(`lesson_end room: ${context.roomId}`);
             const res = {start_ts:room.lesson.start_time, end_ts: room.lesson.end_time};
             socket.to(context.roomId).emit('lesson_ended', res);
-            check_log_complete(io, socket, room, context);
+            await check_log_complete(io, socket, room, context);
             callback({result:true, data:res});
         } catch (e) {
             console.error(`[ERROR] in 'lesson_end' handler:`, e);
@@ -453,7 +454,7 @@ function lesson_handler(io, socket, rooms, context){
             callback({ result: false, data: e.message });
         }
     });
-    socket.on('log_complete', (data, callback) => {
+    socket.on('log_complete', async (data, callback) => {
         try {
             if (!context.roomId || !context.clientId) {
                 return callback({ result: false, data: 'roomId and clientId are required' });
@@ -470,7 +471,7 @@ function lesson_handler(io, socket, rooms, context){
             perClientLog.set(ts, { end_ts: Date.now(), log: log_ });
 
             room.clients_log_isComplete.set(context.clientId, true);
-            check_log_complete(io, socket, room, context);
+            await check_log_complete(io, socket, room, context);
             const kkk = {full_log: Object.fromEntries(perClientLog) };
             console.log(`ack log_complete to ${context.clientId}`); 
             callback({result: true, data: kkk});
@@ -564,5 +565,3 @@ function lesson_handler(io, socket, rooms, context){
 
   })
 }
-
-module.exports = lesson_handler;

@@ -20,7 +20,7 @@ function upperBoundBySeq(arr, targetSeq) {
   return lo;
 }
 
-module.exports = (io, socket, rooms, context) => {
+function chat_handler(io, socket, rooms, context) {
     socket.on("chat_send", async (data, callback) => {
         try {
             const room = rooms[context.roomId];
@@ -30,7 +30,7 @@ module.exports = (io, socket, rooms, context) => {
             if (!msgText) return callback?.({ result: false, data: "empty message" });
             if (msgText.length > 4096) return callback?.({ result: false, data: "message_too_long" });
 
-            const mode = data?.mode === "SECRET" ? "SECRET" : "ALL";
+            const mode = data?.mode === "PRIVATE" ? "PRIVATE" : "ALL";
             const sendTo = Array.isArray(data?.send_to) ? data.send_to : [];
 
             const ts = Date.now();
@@ -70,7 +70,7 @@ module.exports = (io, socket, rooms, context) => {
             else {
                 for (const cid of recipients) {
                     const entry = room.clients.get(cid);
-                    console.log(`[${context.roomId}][${msgId}] ${context.clientId} to ${cid} (SECRET): ${msgText}`);
+                    console.log(`[${context.roomId}][${msgId}] ${context.clientId} to ${cid} (PRIVATE): ${msgText}`);
                     entry?.socket?.emit("chat_message", chat);
                 }
             }
@@ -94,7 +94,7 @@ module.exports = (io, socket, rooms, context) => {
             // 0) 권한 필터 통과 메시지 배열(이미 seq 오름차순이라고 가정)
             const visible = room.chat_log.filter(m =>
                 m.mode === "ALL" ||
-                (m.mode === "SECRET" && (m.from === context.clientId || (Array.isArray(m.send_to) && m.send_to.includes(context.clientId))))
+                (m.mode === "PRIVATE" && (m.from === context.clientId || (Array.isArray(m.send_to) && m.send_to.includes(context.clientId))))
             );
 
             const DEFAULT_WINDOW = 50;
@@ -163,3 +163,5 @@ module.exports = (io, socket, rooms, context) => {
         }
     });
 };
+
+export default chat_handler;

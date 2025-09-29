@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Mediasoup SFU Server and Client",
   "main": "server.js",
+  "type": "module",
   "scripts": {
     "start": "node server/server.js",
     "build": "webpack"
@@ -10,9 +11,12 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "bcrypt": "^6.0.0",
     "express": "^4.19.2",
+    "luxon": "^3.7.2",
     "mediasoup": "^3.14.5",
     "mediasoup-client": "^3.7.10",
+    "pg": "^8.16.3",
     "socket.io": "^4.7.5",
     "socket.io-client": "^4.7.5"
   },
