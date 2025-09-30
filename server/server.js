@@ -16,7 +16,7 @@ import group_handler from './handlers/group.js';
 import { mergeFullLogWithLessonTime, checkAttendance, lesson_handler } from './handlers/lesson.js';
 import { archiveRoomToDB, store_room, add_attendees } from './handlers/room.js';
 import { ClassInfo, isClassActive, class_handler } from './handlers/class.js';
-import { create_account, LogIn, isLoggedIn, getLogOnId, guestLogin } from './handlers/account.js';
+import { create_account, LogIn, isLoggedIn, getLogOnId, guestLogin, getAccountByUUID } from './handlers/account.js';
 
 const app = express();
 const __filename = fileURLToPath(import.meta.url);
@@ -262,13 +262,14 @@ io.on('connection', (socket) => {
             if (!room) {
                 if(await isClassActive(roomId))
                 {
-                    //TODO DB extend
                     const reserved_room = await ClassInfo(roomId)
                     if(reserved_room.tooEarly){
                         console.log(`Too early to join the class ${roomId}`);
                         return callback({ result: false, data: `Too early to join the class ${roomId}` });
                     }
-                    room = await createRoom(reserved_room.creator, roomId, reserved_room.lesson_start, reserved_room.lesson_end);
+                    const account = await getAccountByUUID(reserved_room.creator);
+                    console.log(`Class ${roomId} is active, creator: ${JSON.stringify(account)}`);
+                    room = await createRoom(account.account_id, roomId, reserved_room.lesson_start, reserved_room.lesson_end);
                 } else{
                     const lesson_start = data['lesson_start'];
                     const lesson_end = data['lesson_end'];
@@ -313,6 +314,7 @@ io.on('connection', (socket) => {
             if (context.account_uuid) {
                 add_attendees(room.db_room_id, context.account_uuid);
                 room.clientIdToUUID.set(clientId, context.account_uuid);
+                room.UUIDToClientId.set(context.account_uuid, clientId);
             } else{
                 throw new Error(`context.account_uuid is null`);
             }

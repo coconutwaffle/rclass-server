@@ -109,3 +109,32 @@ export function getLogOnId(context)
 export function isLoggedIn(context) {
   return context.account_uuid ? true : false;
 }
+
+/**
+ * UUID 로 계정 검색
+ * @async
+ * @param {string} uuid - account 테이블의 id (UUID)
+ * @returns {Promise<{ account_uuid: string, account_id: string, name: string, account_type: string } | null>}
+ */
+export async function getAccountByUUID(uuid) {
+  if (!uuid) {
+    throw new Error("getAccountByUUID: uuid is required");
+  }
+
+  const query = `
+    SELECT id AS account_uuid, account_id, name, account_type
+    FROM account
+    WHERE id = $1
+    LIMIT 1
+  `;
+
+  try {
+    const result = await pool.query(query, [uuid]);
+    if (result.rowCount === 0) {
+      return null; // 해당 UUID 없음
+    }
+    return result.rows[0];
+  } catch (err) {
+    throw err;
+  }
+}

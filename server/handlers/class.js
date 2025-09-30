@@ -444,17 +444,17 @@ export async function ClassInfo(roomName) {
   try {
     // classId, creator 조회
     const res = await client.query(
-      `SELECT class_id, creator FROM classes WHERE room_name = $1`,
+      `SELECT class_id, creator_id FROM classes WHERE class_name = $1`,
       [roomName]
     );
     if (res.rowCount === 0) throw new Error("Class not found");
-    const { class_id: classId, creator } = res.rows[0];
+    const { class_id: classId, creator_id: creatorId } = res.rows[0];
 
     // 수업 시간 목록 불러오기
     const lessonTimes = await listClassTime(classId);
     if (lessonTimes.length === 0) {
       return {
-        creator,
+        creator: creatorId,
         lesson_start: null,
         lesson_end: null,
         tooEarly: false,
@@ -493,7 +493,7 @@ export async function ClassInfo(roomName) {
     const tooEarly = now < closest.early;
 
     return {
-      creator,
+      creator: creatorId,
       lesson_start: closest.start.toUTC().toMillis(),   // UTC ms
       lesson_end: closest.end.toUTC().toMillis(),       // UTC ms
       tooEarly,
@@ -636,13 +636,17 @@ export function class_handler(io, socket, rooms, context) {
         timezone: data.timezone,
         early_open_window: data.early_open_window,
       });
-
+      const full = {
+        ...newTime,
+        start: fromWeekMinutes(newTime.week_start),
+        end: fromWeekMinutes(newTime.week_end),
+      }
       console.log(`[add_class_time] for class ${classId}`);
 
       io.emit("class_time_updated", {
         lessonTimeId: newTime.lesson_time_id,
         action: "create",
-        data: newTime
+        data: full
       });
 
       callback({ result: true, data: newTime });
@@ -664,11 +668,15 @@ export function class_handler(io, socket, rooms, context) {
 
       const updated = await editClassTime(lessonTimeId, context, data.updates || {});
       console.log(`[edit_class_time] ${lessonTimeId}`);
-
+      const decorated = {
+        ...updated,
+        start: fromWeekMinutes(updated.week_start),
+        end: fromWeekMinutes(updated.week_end),
+      };
       io.emit("class_time_updated", {
         lessonTimeId,
         action: "edit",
-        data: updated
+        data: decorated
       });
 
       callback({ result: true, data: updated });
@@ -688,10 +696,10 @@ export function class_handler(io, socket, rooms, context) {
         return callback({ result: false, data: "lesson_time_id is required" });
       }
 
-      const { deleted, class_id } = await deleteClassTime(lessonTimeId, context);
-      console.log(`[delete_class_time] ${lessonTimeId}`);
+      const res = await deleteClassTime(lessonTimeId, context);
+      console.log(`[delete_class_time] ${res}`);
 
-      if (deleted) {
+      if (res) {
         io.emit("class_time_updated", {
           lessonTimeId,
           action: "delete",
@@ -699,7 +707,7 @@ export function class_handler(io, socket, rooms, context) {
         });
       }
 
-      callback({ result: true, data: deleted });
+      callback({ result: true, data: {lessonTimeId} });
     } catch (e) {
       console.error(`[ERROR] in 'delete_class_time' handler:`, e);
       callback({ result: false, data: e.message });
