@@ -332,8 +332,8 @@ export async function listRoomsByClass(classId, limit = 20, offset = 0) {
 /**
  * 특정 room_id의 출결 결과 조회
  * @async
- * @param {string} roomId - rooms 테이블의 room_id (UUID)
- * @returns {Promise<Object>} LessonAttendance 구조와 동일한 형태의 JSON
+ * @param {string} roomId
+ * @returns {Promise<Object>} LessonAttendance 구조
  */
 export async function getAttendanceResults(roomId) {
   // 1️⃣ rooms 테이블에서 lesson_start / lesson_end 가져오기
@@ -363,12 +363,13 @@ export async function getAttendanceResults(roomId) {
   `;
   const res = await pool.query(logsQuery, [roomId]);
 
-  // 3️⃣ LessonAttendance 구조에 맞게 변환
+  // 3️⃣ LessonAttendance 구조 생성
   const results = {};
   for (const row of res.rows) {
-    results[row.attendee_name] = {
+    results[row.attendee_id] = {         // ✅ UUID를 key로 사용
+      name: row.attendee_name,           // ✅ 표시용 이름 필드 추가
       status: row.status,
-      reason: row.reason || '',
+      reason: row.reason || "",
       guest: row.guest ?? false,
       detail: row.log_data?.summary ?? {},
       per_block: row.log_data?.per_block ?? [],
@@ -376,9 +377,40 @@ export async function getAttendanceResults(roomId) {
   }
 
   return {
+    room_id: roomId,
     lesson_start: Number(lesson_start) || 0,
     lesson_end: Number(lesson_end) || 0,
     results,
+  };
+}
+
+/**
+ * 특정 room_id의 출석자 이름(id) → UUID 매핑 조회
+ * @async
+ * @param {string} roomId - rooms 테이블의 room_id (UUID)
+ * @returns {Promise<Object>} { id_map: { "<학생id>": "<UUID>" }, room_id }
+ */
+export async function getAttendanceIdMap(roomId) {
+  const query = `
+    SELECT 
+      a.id   AS attendee_id,
+      a.name AS attendee_name
+    FROM attendance_logs l
+    JOIN account a ON l.attendee_id = a.id
+    WHERE l.room_id = $1
+    ORDER BY a.name;
+  `;
+
+  const res = await pool.query(query, [roomId]);
+
+  const id_map = {};
+  for (const row of res.rows) {
+    id_map[row.attendee_name] = row.attendee_id; // name(id) → uuid
+  }
+
+  return {
+    room_id: roomId,
+    id_map,
   };
 }
 
