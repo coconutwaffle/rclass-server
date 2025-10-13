@@ -1,6 +1,7 @@
 
 import { pool } from "./db.js";
 import { isLoggedIn } from "./account.js";
+import { DateTime } from "luxon";
 
 // 활성 클래스 확인
 export async function isClassActive(roomId) {
@@ -13,6 +14,23 @@ export async function isClassActive(roomId) {
   `;
   const result = await pool.query(query, [roomId]);
   return result.rowCount > 0;
+}
+/**
+ * 활성 클래스 UUID 조회
+ * @async
+ * @param {string} roomName - 클래스 이름 (class_name)
+ * @returns {Promise<string|null>} 활성 클래스의 UUID, 없으면 null
+ */
+export async function getActiveClass(roomName) {
+  const query = `
+    SELECT class_id
+    FROM classes
+    WHERE class_name = $1
+      AND alive = TRUE
+    LIMIT 1
+  `;
+  const result = await pool.query(query, [roomName]);
+  return result.rowCount > 0 ? result.rows[0].class_id : null;
 }
 
 
@@ -437,7 +455,6 @@ export async function listClassTime(classId) {
   });
 }
 
-import { DateTime } from "luxon";
 
 export async function ClassInfo(roomName) {
   const client = await pool.connect();
@@ -454,6 +471,7 @@ export async function ClassInfo(roomName) {
     const lessonTimes = await listClassTime(classId);
     if (lessonTimes.length === 0) {
       return {
+        class_id: classId,
         creator: creatorId,
         lesson_start: null,
         lesson_end: null,
@@ -493,11 +511,85 @@ export async function ClassInfo(roomName) {
     const tooEarly = now < closest.early;
 
     return {
+      class_id: classId,
       creator: creatorId,
       lesson_start: closest.start.toUTC().toMillis(),   // UTC ms
       lesson_end: closest.end.toUTC().toMillis(),       // UTC ms
       tooEarly,
       early_open_time: closest.early.toUTC().toMillis() // UTC ms
+    };
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * 특정 class_id로 수업 정보 조회
+ * @async
+ * @param {string} classId - 클래스 UUID (PK)
+ * @returns {Promise<object>} 수업 일정 및 상태 정보
+ */
+export async function ClassInfoById(classId) {
+  const client = await pool.connect();
+  try {
+    // 1️⃣ class_id 기반으로 creator 조회
+    const res = await client.query(
+      `SELECT class_id, class_name, creator_id FROM classes WHERE class_id = $1`,
+      [classId]
+    );
+    if (res.rowCount === 0) throw new Error("Class not found");
+
+    const { class_id, class_name, creator_id } = res.rows[0];
+
+    // 2️⃣ 수업 시간 목록 조회
+    const lessonTimes = await listClassTime(class_id);
+    if (lessonTimes.length === 0) {
+      return {
+        class_id,
+        class_name,
+        creator: creator_id,
+        lesson_start: null,
+        lesson_end: null,
+        tooEarly: false,
+        early_open_time: null
+      };
+    }
+
+    // 3️⃣ 현재 시각과 비교해 가장 가까운 수업 계산
+    const now = DateTime.utc();
+    let closest = null;
+
+    for (const lt of lessonTimes) {
+      const tz = lt.timezone || "UTC";
+      const localNow = now.setZone(tz);
+      const weekStart = localNow.startOf("week");
+
+      let start = weekStart.plus({ minutes: lt.week_start });
+      let end = weekStart.plus({ minutes: lt.week_end });
+
+      // 이미 끝났으면 다음 주로 밀기
+      if (end < localNow) {
+        start = start.plus({ weeks: 1 });
+        end = end.plus({ weeks: 1 });
+      }
+
+      const early = start.minus({ milliseconds: lt.early_open_window });
+
+      if (!closest || start < closest.start) {
+        closest = { start, end, early };
+      }
+    }
+
+    const tooEarly = now < closest.early;
+
+    return {
+      class_id,
+      class_name,
+      creator: creator_id,
+      lesson_start: closest.start.toUTC().toMillis(),
+      lesson_end: closest.end.toUTC().toMillis(),
+      tooEarly,
+      early_open_time: closest.early.toUTC().toMillis()
     };
   } finally {
     client.release();

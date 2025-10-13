@@ -1,5 +1,5 @@
 import { pool } from "./db.js";
-
+import { create_account, LogIn, isLoggedIn, getLogOnId, guestLogin, getAccountByUUID } from './account.js';
 /**
  * DB에 room을 생성하고 UUID를 반환
  * - rooms insert
@@ -30,9 +30,9 @@ export async function store_room(room, context) {
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
       RETURNING room_id
     `;
-
+    
     const values = [
-      room.sesson_no,                               // session_no (생성 시각 ms)
+      room.session_no,                               // session_no (생성 시각 ms)
       context.account_uuid,              // creator_id
       room.lesson_reserved?.st_time ?? null,
       room.lesson_reserved?.end_time ?? null,
@@ -43,7 +43,8 @@ export async function store_room(room, context) {
       room.attendancePolicy.start_late,
       room.attendancePolicy.ealry_exit,
     ];
-
+    console.log("store_room: inserting into rooms with values:", values);
+    console.log("store_room: room object:", room);
     const res = await client.query(insertQuery, values);
     const db_room_id = res.rows[0].room_id;
 
@@ -170,21 +171,57 @@ export async function archiveRoomToDB(room) {
     // 3. attendance_logs
     console.log(`Archiving attendance logs for room ${room.db_room_id}`);
     console.log(`merged_log: ${JSON.stringify(room.merged_log, null, 2)}`);
-    if (room.merged_log) {
-      for (const [clientId, logData] of Object.entries(room.merged_log.full_log || {})) {
-        // clientId → uuid 매핑
+    console.log(`attendance_result: ${JSON.stringify(room.attendance_result, null, 2)}`);
+    if (room.attendance_result && room.attendance_result.results) {
+      const { lesson_start, lesson_end, results } = room.attendance_result;
+
+      for (const [clientId, attResult] of Object.entries(results)) {
         const uuid = room.clientIdToUUID.get(clientId);
         if (!uuid) {
           console.warn(`archiveRoomToDB: no uuid mapping for clientId ${clientId}, skip`);
           continue;
         }
 
+        // JSON 데이터 구성 (detail + per_block 포함)
+        const logData = {
+          summary: attResult.detail || {},
+          per_block: attResult.per_block || [],
+          firstAppear_ms: attResult.detail?.firstAppear_ms || 0,
+          lastAppear_ms: attResult.detail?.lastAppear_ms || 0,
+        };
+
+        const status = attResult.status || 'present';
+        const reason = attResult.reason || '';
+        const guest = attResult.guest ?? false;
+
+        // ✅ UPSERT 처리 (중복 시 갱신)
         await client.query(
-          `INSERT INTO attendance_logs (room_id, attendee_id, log_data)
-          VALUES ($1, $2, $3)`,
-          [room.db_room_id, uuid, logData]
+          `
+          INSERT INTO attendance_logs (room_id, attendee_id, status, reason, guest, log_data)
+          VALUES ($1, $2, $3, $4, $5, $6)
+          ON CONFLICT (room_id, attendee_id)
+          DO UPDATE SET
+            status = EXCLUDED.status,
+            reason = EXCLUDED.reason,
+            guest = EXCLUDED.guest,
+            log_data = EXCLUDED.log_data,
+            updated_at = NOW()
+          `,
+          [room.db_room_id, uuid, status, reason, guest, logData]
+        );
+
+        console.log(
+          `[attendance_logs] Saved ${clientId} (${uuid}) → status=${status}, guest=${guest}`
         );
       }
+
+      console.log(
+        `[attendance_logs] Archiving completed for room ${room.db_room_id} (students: ${Object.keys(
+          results
+        ).length})`
+      );
+    } else {
+      console.warn(`[attendance_logs] No attendance_result found for room ${room.db_room_id}`);
     }
 
 
@@ -243,4 +280,154 @@ export async function add_attendees(db_room_id, account_uuid) {
     console.error("add_attendees error:", err);
     return false;
   }
+}
+
+/**
+ * 특정 class_id의 세션(room) 목록 + 상태 조회 (LIMIT / OFFSET 기반)
+ * @async
+ * @param {string} classId - classes 테이블의 class_id (UUID)
+ * @param {number} [limit=20] - 한 번에 가져올 개수
+ * @param {number} [offset=0] - 시작 위치
+ */
+export async function listRoomsByClass(classId, limit = 20, offset = 0) {
+  const dataQuery = `
+    SELECT
+      r.room_id,
+      r.session_no,
+      r.class_name,
+      r.lesson_start,
+      r.lesson_end,
+      a.name AS creator_name,
+      CASE
+        WHEN r.lesson_start IS NULL THEN 'waiting'
+        WHEN r.lesson_end IS NULL THEN 'ongoing'
+        ELSE 'finished'
+      END AS status
+    FROM rooms r
+    JOIN account a ON r.creator_id = a.id
+    WHERE r.class_id = $1
+    ORDER BY r.lesson_start DESC NULLS LAST, r.session_no DESC
+    LIMIT $2 OFFSET $3
+  `;
+
+  const countQuery = `SELECT COUNT(*) FROM rooms WHERE class_id = $1`;
+
+  const [dataRes, countRes] = await Promise.all([
+    pool.query(dataQuery, [classId, limit, offset]),
+    pool.query(countQuery, [classId]),
+  ]);
+
+  const total = Number(countRes.rows[0].count);
+
+  return {
+    data: dataRes.rows,
+    total,
+    limit,
+    offset,
+    start: offset,
+    end: offset + dataRes.rows.length - 1
+  };
+}
+
+/**
+ * 특정 room_id의 출결 결과 조회
+ * @async
+ * @param {string} roomId - rooms 테이블의 room_id (UUID)
+ * @returns {Promise<Object>} LessonAttendance 구조와 동일한 형태의 JSON
+ */
+export async function getAttendanceResults(roomId) {
+  // 1️⃣ rooms 테이블에서 lesson_start / lesson_end 가져오기
+  const roomRes = await pool.query(
+    `SELECT lesson_start, lesson_end FROM rooms WHERE room_id = $1`,
+    [roomId]
+  );
+  if (roomRes.rowCount === 0) {
+    throw new Error(`Room not found for room_id=${roomId}`);
+  }
+
+  const { lesson_start, lesson_end } = roomRes.rows[0];
+
+  // 2️⃣ attendance_logs + account 조인해서 전체 출결 데이터 가져오기
+  const logsQuery = `
+    SELECT 
+      a.id   AS attendee_id,
+      a.name AS attendee_name,
+      l.status,
+      l.reason,
+      l.guest,
+      l.log_data
+    FROM attendance_logs l
+    JOIN account a ON l.attendee_id = a.id
+    WHERE l.room_id = $1
+    ORDER BY a.name;
+  `;
+  const res = await pool.query(logsQuery, [roomId]);
+
+  // 3️⃣ LessonAttendance 구조에 맞게 변환
+  const results = {};
+  for (const row of res.rows) {
+    results[row.attendee_name] = {
+      status: row.status,
+      reason: row.reason || '',
+      guest: row.guest ?? false,
+      detail: row.log_data?.summary ?? {},
+      per_block: row.log_data?.per_block ?? [],
+    };
+  }
+
+  return {
+    lesson_start: Number(lesson_start) || 0,
+    lesson_end: Number(lesson_end) || 0,
+    results,
+  };
+}
+
+
+export function room_handler(io, socket, rooms, context) {
+  //
+  // 🔹 수업(room) 관련 이벤트
+  //
+  socket.on("list_rooms_by_class", async (data, callback) => {
+    try {
+      // ✅ 1. 로그인 확인
+      if (!isLoggedIn(context)) {
+        return callback({ result: false, data: "log on required" });
+      }
+
+      // ✅ 2. 파라미터 검증
+      const classId = data?.class_id;
+      const limit = Number(data?.limit ?? 20);
+      const offset = Number(data?.offset ?? 0);
+
+      if (!classId) {
+        return callback({ result: false, data: "class_id is required" });
+      }
+
+      // ✅ 3. DB 조회
+      const result = await listRoomsByClass(classId, limit, offset);
+
+      // ✅ 4. 성공 응답
+      callback({ result: true, data: result });
+    } catch (e) {
+      console.error(`[ERROR] in 'list_rooms_by_class' handler:`, e);
+      callback({ result: false, data: e.message });
+    }
+  });
+
+  socket.on("get_attendance_results", async (data, callback) => {
+    try {
+      if (!isLoggedIn(context))
+        return callback({ result: false, data: "log on required" });
+
+      const roomId = data?.room_id;
+      if (!roomId)
+        return callback({ result: false, data: "room_id is required" });
+
+      const results = await getAttendanceResults(roomId);
+      callback({ result: true, data: results });
+    } catch (e) {
+      console.error(`[ERROR] in 'get_attendance_results' handler:`, e);
+      callback({ result: false, data: e.message });
+    }
+  });
 }

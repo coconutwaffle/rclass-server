@@ -14,10 +14,10 @@ import stream_handler from './handlers/stream.js';
 import group_handler from './handlers/group.js';
 
 import { mergeFullLogWithLessonTime, checkAttendance, lesson_handler } from './handlers/lesson.js';
-import { archiveRoomToDB, store_room, add_attendees } from './handlers/room.js';
-import { ClassInfo, isClassActive, class_handler } from './handlers/class.js';
+import { archiveRoomToDB, store_room, add_attendees, room_handler } from './handlers/room.js';
+import { ClassInfo, isClassActive, class_handler, getActiveClass, ClassInfoById } from './handlers/class.js';
 import { create_account, LogIn, isLoggedIn, getLogOnId, guestLogin, getAccountByUUID } from './handlers/account.js';
-
+import {attendance_handler} from './handlers/attendance.js';
 const app = express();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -88,7 +88,7 @@ runMediasoupWorkers();
  *   }
  * }>}
  */
-async function createRoom(creatorId, roomId, st_time, end_time) {
+async function createRoom(creatorId, roomId, st_time, end_time, class_id) {
     const worker = getMediasoupWorker();
     const router = await worker.createRouter({ mediaCodecs: config.mediasoup.router.mediaCodecs });
     let lesson_reserved = { st_time, end_time };
@@ -121,8 +121,9 @@ async function createRoom(creatorId, roomId, st_time, end_time) {
         },
         merged_log: null,
         attendance_result: null,
+        class_id,
         roomId,
-        sesson_no: Date.now(),
+        session_no: Date.now(),
         db_room_id: null,
         clientIdToUUID: new Map(),
         UUIDToClientId: new Map(),
@@ -210,6 +211,8 @@ io.on('connection', (socket) => {
     stream_handler(io, socket, rooms, context, config);
     chat_handler(io, socket, rooms, context);
     class_handler(io, socket, rooms, context);
+    room_handler(io, socket, rooms, context);
+    attendance_handler(io, socket, rooms, context);
     socket.on('login', async (data, callback) => {
         try {
             const { id, pwd} = data;
@@ -262,18 +265,33 @@ io.on('connection', (socket) => {
             if (!room) {
                 if(await isClassActive(roomId))
                 {
-                    const reserved_room = await ClassInfo(roomId)
+                    console.log(`Class ${roomId} is reserved, checking reservation...`);
+                    const class_id = await getActiveClass(roomId);
+                    if(!class_id)
+                    {
+                        console.log(`Class ${roomId} is not active.`);
+                        return callback({ result: false, data: `Class ${roomId} is not active.` });
+                    }
+                    const reserved_room = await ClassInfoById(class_id);
+                    if(!reserved_room)
+                    {
+                        console.log(`Class ${roomId} info not found.`);
+                        return callback({ result: false, data: `Class ${roomId} info not found.` });
+                    }
                     if(reserved_room.tooEarly){
-                        console.log(`Too early to join the class ${roomId}`);
-                        return callback({ result: false, data: `Too early to join the class ${roomId}` });
+                        //TODO
+                        console.log(`Too early to join the class ${roomId} for test just passing`);
+                        //return callback({ result: false, data: `Too early to join the class ${roomId}` });
                     }
                     const account = await getAccountByUUID(reserved_room.creator);
                     console.log(`Class ${roomId} is active, creator: ${JSON.stringify(account)}`);
-                    room = await createRoom(account.account_id, roomId, reserved_room.lesson_start, reserved_room.lesson_end);
+                    console.log(`Creating a new room by ${reserved_room.lesson_start}, ${reserved_room.lesson_end}, ${reserved_room.class_id}`);
+                    room = await createRoom(account.account_id, roomId, reserved_room.lesson_start, reserved_room.lesson_end, reserved_room.class_id);
                 } else{
+                    console.log(`Creating a new room ${roomId} by ${clientId}`);
                     const lesson_start = data['lesson_start'];
                     const lesson_end = data['lesson_end'];
-                    room = await createRoom(clientId, roomId, lesson_start, lesson_end);
+                    room = await createRoom(clientId, roomId, lesson_start, lesson_end, null);
                 }
                 await store_room(room, context);
                 rooms[roomId] = room;

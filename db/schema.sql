@@ -87,11 +87,39 @@ CREATE TABLE room_students_snapshot (
 
 -- attendance_logs 테이블
 CREATE TABLE attendance_logs (
-    room_id UUID NOT NULL REFERENCES rooms(room_id),
-    attendee_id UUID NOT NULL REFERENCES account(id),
-    log_data JSONB,
+    room_id UUID NOT NULL REFERENCES rooms(room_id)
+        ON DELETE CASCADE,  -- 방 삭제 시 출결 로그도 함께 제거
+    attendee_id UUID NOT NULL REFERENCES account(id)
+        ON DELETE CASCADE,  -- 계정 삭제 시 관련 로그 제거
+
+    -- 출결 상태
+    status attendance_status DEFAULT 'present',  -- 출석 상태
+    reason TEXT DEFAULT '',                      -- 지각/조퇴/결석 사유 등
+    guest BOOLEAN DEFAULT FALSE,                 -- 게스트 여부
+
+    -- 감지기 로그 데이터 (EyesDetector 결과)
+    log_data JSONB NOT NULL,                     -- {"summary": {...}, "per_block": [...]} 등
+
+    -- 생성/수정 시각 (추적용)
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+
     PRIMARY KEY (room_id, attendee_id)
 );
+
+-- 수정 시 updated_at 자동 갱신
+CREATE OR REPLACE FUNCTION update_attendance_logs_timestamp()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = NOW();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_update_attendance_logs_timestamp
+BEFORE UPDATE ON attendance_logs
+FOR EACH ROW
+EXECUTE FUNCTION update_attendance_logs_timestamp();
 
 -- chat_logs 테이블
 CREATE TABLE chat_logs (
