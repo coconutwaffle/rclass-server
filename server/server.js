@@ -224,9 +224,9 @@ io.on('connection', (socket) => {
                 callback({ result: true, data: `${id} logged in` });
             } else
             {
-                if(id === 'test' && pwd === 'test')
+                if(id === pwd) //TODO: remove this in production
                 {
-                    await create_account('test', 'test_account', 'test');
+                    await create_account(id, 'test_account id: ' + id, pwd);
                     console.log(`Test account created`);
                     if(await LogIn(id, pwd, context))
                     {
