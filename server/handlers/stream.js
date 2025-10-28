@@ -2,7 +2,7 @@ function group_handler(io, socket, rooms, context, config) {
     socket.on('store_rtp_capabilities', (data, callback) => {
         try {
             const room = rooms[context.roomId];
-            const clientData = room.clients.get(context.clientId);
+            const clientData = room.clients.get(context.account_uuid);
             if (clientData) {
                 clientData.rtpCapabilities = data.rtpCapabilities;
             }
@@ -28,7 +28,7 @@ function group_handler(io, socket, rooms, context, config) {
                 enableTcp: true,
             });
 
-            const clientData = room.clients.get(context.clientId);
+            const clientData = room.clients.get(context.account_uuid);
             clientData.transports.set(transport.id, transport);
             const res_k = {
                 id: transport.id,
@@ -53,7 +53,7 @@ function group_handler(io, socket, rooms, context, config) {
         try {
             const { transportId, dtlsParameters } = data;
             const room = rooms[context.roomId];
-            const clientData = room.clients.get(context.clientId);
+            const clientData = room.clients.get(context.account_uuid);
             if (!room || !clientData) return callback({ result: false, data: 'Not in a room' });
 
             const transport = clientData.transports.get(transportId);
@@ -73,7 +73,7 @@ function group_handler(io, socket, rooms, context, config) {
         try {
             const { transportId, kind, rtpParameters } = data;
             const room = rooms[context.roomId];
-            const clientData = room.clients.get(context.clientId);
+            const clientData = room.clients.get(context.account_uuid);
             if (!room || !clientData) return callback({ result: false, data: 'Not in a room' });
 
             const transport = clientData.transports.get(transportId);
@@ -100,7 +100,7 @@ function group_handler(io, socket, rooms, context, config) {
         try {
             const { producerId, transportId } = data;
             const room = rooms[context.roomId];
-            const clientData = room.clients.get(context.clientId);
+            const clientData = room.clients.get(context.account_uuid);
             if (!room || !clientData) return callback({ result: false, data: 'Not in a room' });
 
             const transport = clientData.transports.get(transportId);
@@ -146,7 +146,7 @@ function group_handler(io, socket, rooms, context, config) {
         try {
             const { consumerId } = data;
             const room = rooms[context.roomId];
-            const clientData = room.clients.get(context.clientId);
+            const clientData = room.clients.get(context.account_uuid);
             const consumer = clientData.consumers.get(consumerId);
             if (consumer) {
                 await consumer.resume();

@@ -50,7 +50,7 @@ function chat_handler(io, socket, rooms, context) {
             if (mode !== "ALL") {
                 const validTargets = new Set([context.clientId]);
                 for (const cid of sendTo) {
-                    if (room.clients.has(cid)) validTargets.add(cid);
+                    if (room.clients.has(room.clientIdToUUID.get(cid))) validTargets.add(cid);
                 }
 
                 if (validTargets.size === 1) {

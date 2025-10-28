@@ -88,7 +88,7 @@ runMediasoupWorkers();
  *   }
  * }>}
  */
-async function createRoom(creatorId, roomId, st_time, end_time, class_id) {
+async function createRoom(creatorId, roomId, st_time, end_time, class_id, creator_uuid) {
     const worker = getMediasoupWorker();
     const router = await worker.createRouter({ mediaCodecs: config.mediasoup.router.mediaCodecs });
     let lesson_reserved = { st_time, end_time };
@@ -109,6 +109,7 @@ async function createRoom(creatorId, roomId, st_time, end_time, class_id) {
         clients_log: new Map(), 
         clients_log_isComplete: new Map(), 
         creator: creatorId, 
+        creator_uuid,
         creator_client_id: null, 
         lesson: {start_time: null, end_time: null, state: 'Not started'},
         lesson_reserved,
@@ -127,6 +128,7 @@ async function createRoom(creatorId, roomId, st_time, end_time, class_id) {
         db_room_id: null,
         clientIdToUUID: new Map(),
         UUIDToClientId: new Map(),
+        UUIDToName: new Map(),
     };
 }
 async function can_destory_room(io, socket, room, context)
@@ -213,6 +215,23 @@ io.on('connection', (socket) => {
     class_handler(io, socket, rooms, context);
     room_handler(io, socket, rooms, context);
     attendance_handler(io, socket, rooms, context);
+    socket.on('create_account', async (data, callback) => {
+        try {
+            const { id, name, pwd} = data;
+            if (!id || !name || !pwd) {
+                return callback({ result: false, data: 'id, name and pwd are required' });
+            }
+            const res = await create_account(id, name, pwd);
+            callback({ result: true, data: res });
+        } 
+        catch (err) {
+            console.error(`[ERROR] in 'create_account' handler:`, err);
+            if (err instanceof Error) {
+                console.error(err.stack);
+            }
+            callback({ result: false, data: err.message });
+        }
+    })
     socket.on('login', async (data, callback) => {
         try {
             const { id, pwd} = data;
@@ -250,16 +269,11 @@ io.on('connection', (socket) => {
             if (!roomId || !clientId) {
                 return callback({ result: false, data: 'roomId and clientId are required' });
             }
-            if(isLoggedIn(context))
+            if(!isLoggedIn(context))
             {
-                if(getLogOnId(context) !== clientId)
-                {
-                    return callback({ result: false, data: 'logon_id, clientId mismatch' });
-                }
-            } else {
                 await guestLogin(clientId, context);
             }
-
+            context.name = clientId;
             let room = rooms[roomId];
 
             if (!room) {
@@ -278,38 +292,44 @@ io.on('connection', (socket) => {
                         console.log(`Class ${roomId} info not found.`);
                         return callback({ result: false, data: `Class ${roomId} info not found.` });
                     }
-                    if(reserved_room.tooEarly){
-                        //TODO
-                        console.log(`Too early to join the class ${roomId} for test just passing`);
-                        //return callback({ result: false, data: `Too early to join the class ${roomId}` });
+                    if (reserved_room.tooEarly) {
+                        if (reserved_room.creator !== context.account_uuid) {
+                        // 일반 유저 → 입장 불가
+                        console.warn(`[TOO EARLY REJECT] User ${context.account_uuid} tried to join class ${roomId} before start time.`);
+                        return callback({ result: false, data: `Too early to join the class ${roomId}` });
+                        } else {
+                        // 선생님 → 입장은 허용, 하지만 로그를 남김
+                        console.warn(`[FORCED ROOM CREATION] Teacher ${context.name} (${context.account_uuid}) is entering early.`);
+                        console.warn(`Class ID: ${class_id}, Room ID: ${roomId}, Time: ${new Date().toISOString()}`);
+                        }
                     }
                     const account = await getAccountByUUID(reserved_room.creator);
                     console.log(`Class ${roomId} is active, creator: ${JSON.stringify(account)}`);
                     console.log(`Creating a new room by ${reserved_room.lesson_start}, ${reserved_room.lesson_end}, ${reserved_room.class_id}`);
-                    room = await createRoom(account.account_id, roomId, reserved_room.lesson_start, reserved_room.lesson_end, reserved_room.class_id);
+                    room = await createRoom(account.account_id, roomId, reserved_room.lesson_start, reserved_room.lesson_end, reserved_room.class_id, reserved_room.creator);
                 } else{
                     console.log(`Creating a new room ${roomId} by ${clientId}`);
                     const lesson_start = data['lesson_start'];
                     const lesson_end = data['lesson_end'];
-                    room = await createRoom(clientId, roomId, lesson_start, lesson_end, null);
+                    room = await createRoom(clientId, roomId, lesson_start, lesson_end, null, context.account_uuid);
                 }
                 await store_room(room, context);
                 rooms[roomId] = room;
                 console.log(`Room ${roomId} created.`);
             }
 
-            if (room.clients.has(clientId)) {
-                return callback({ result: false, data: `Client with ID ${clientId} already in room ${roomId}` });
+            if (room.clients.has(context.account_uuid)) {
+                return callback({ result: false, data: `Client with name ${clientId} already in room ${roomId}` });
             }
 
             const ts = Date.now();
             context.clientId = clientId;
             context.roomId = roomId;
             const clientData = createClientData({ socket, context, ts });
-            room.clients.set(clientId, clientData);
-            if(!room.clients_log.has(clientId))
-                room.clients_log.set(clientId, new Map());
-            room.clients_log_isComplete.set(context.clientId, false);
+            room.clients.set(context.account_uuid, clientData);
+            if(!room.clients_log.has(context.account_uuid))
+                room.clients_log.set(context.account_uuid, new Map());
+            room.clients_log_isComplete.set(context.account_uuid, false);
             socket.join(roomId);
             if(room.creator === clientId)
             {
@@ -319,8 +339,8 @@ io.on('connection', (socket) => {
                 console.log(`room.creator: ${room.creator}, logon_id: ${getLogOnId(context)}, clientId: ${clientId}`);
             else
                 console.log(`room.creator: ${room.creator}`);
-            console.log(`Client ${clientId} joined room ${roomId} creator: ${(room.creator === clientId)}`);
-            callback({ result: true, data: { rtpCapabilities: room.router.rtpCapabilities , creator: (room.creator === clientId)} });
+            console.log(`Client ${clientId} joined room ${roomId} creator: ${room.creator} me:${context.logon_id}`);
+            callback({ result: true, data: { rtpCapabilities: room.router.rtpCapabilities , creator: (room.creator === context.logon_id)} });
             
             if(room.lesson.state === 'Started')
             {
@@ -333,6 +353,7 @@ io.on('connection', (socket) => {
                 add_attendees(room.db_room_id, context.account_uuid);
                 room.clientIdToUUID.set(clientId, context.account_uuid);
                 room.UUIDToClientId.set(context.account_uuid, clientId);
+                room.UUIDToName.set(context.account_uuid, context.name);
             } else{
                 throw new Error(`context.account_uuid is null`);
             }
@@ -348,7 +369,7 @@ io.on('connection', (socket) => {
     socket.on('get_online_users', (data, callback) => {
         try {
             const room = rooms[context.roomId];
-            const clientData = room.clients.get(context.clientId);
+            const clientData = room.clients.get(context.account_uuid);
             if (!room || !clientData) return callback({ result: false, data: 'Not in a room' });
             callback({ result: true, data: Array.from(room.clients.keys()) })
         } catch (err) {
@@ -367,7 +388,7 @@ io.on('connection', (socket) => {
             const room = rooms[context.roomId];
             if (!room) return;
 
-            const clientData = room.clients.get(context.clientId);
+            const clientData = room.clients.get(context.account_uuid);
             if (!clientData) return;
 
             room.clients_log_isComplete.set(context.clientId, true);
@@ -380,15 +401,17 @@ io.on('connection', (socket) => {
                 socket.to(context.roomId).emit('update_group_one', { group_id: groupId, mode: 'delete', data: groupData });
             });
 
-            room.clients.delete(context.clientId);
+            room.clients.delete(context.account_uuid);
             console.log(`Client ${context.clientId} left room ${context.roomId}`);
+            for (const key of room.clients.keys()) {
+                console.log(`Client ${key} is stiil in room ${context.roomId}`);
+            }
+
             const destory_flag = await can_destory_room(io, socket, room, context);
             if(destory_flag)
             {
                 console.log(`Room ${context.roomId} is empty, closing router.`);
                 room.router.close();
-                //TODO
-                // room.chat_log, clients_log, room.lesson.start_time, room.lesson.end_time 을 backup
                 await archiveRoomToDB(room);
                 delete rooms[context.roomId];
             }

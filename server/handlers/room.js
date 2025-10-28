@@ -80,6 +80,48 @@ export async function store_room(room, context) {
   }
 }
 
+/**
+ * 세션(room) 및 관련 데이터 완전 삭제
+ * @param {string} roomId - 삭제할 room_id
+ * @param {object} [client] - (선택) 외부에서 전달된 DB 클라이언트
+ */
+export async function deleteRoomSession(roomId, client = null) {
+  let localClient = client;
+  let createdLocalClient = false;
+
+  try {
+    // client가 없으면 자동 생성
+    if (!localClient) {
+      localClient = await pool.connect();
+      createdLocalClient = true;
+      await localClient.query("BEGIN");
+    }
+
+    console.log(`[deleteRoomSession] Deleting session ${roomId} and related data...`);
+
+    // 핵심: CASCADE 설정 덕분에 room만 삭제해도 모든 관련 데이터 자동 정리
+    await localClient.query(`DELETE FROM rooms WHERE room_id = $1`, [roomId]);
+
+    // 트랜잭션 커밋 (내부 생성 시만)
+    if (createdLocalClient) {
+      await localClient.query("COMMIT");
+    }
+
+    console.log(`[deleteRoomSession] ✅ Room ${roomId} and all related data deleted successfully`);
+  } catch (err) {
+    if (createdLocalClient && localClient) {
+      await localClient.query("ROLLBACK");
+    }
+    console.error(`[deleteRoomSession] ❌ Failed to delete room ${roomId}:`, err);
+    throw err;
+  } finally {
+    if (createdLocalClient && localClient) {
+      localClient.release();
+    }
+  }
+}
+
+
 
 /**
  * room 객체의 상태를 DB 스키마에 아카이브
@@ -172,15 +214,11 @@ export async function archiveRoomToDB(room) {
     console.log(`Archiving attendance logs for room ${room.db_room_id}`);
     console.log(`merged_log: ${JSON.stringify(room.merged_log, null, 2)}`);
     console.log(`attendance_result: ${JSON.stringify(room.attendance_result, null, 2)}`);
-    if (room.attendance_result && room.attendance_result.results) {
+    const results = room.attendance_result?.results ?? {};
+    if (Object.keys(results).length > 0) {
       const { lesson_start, lesson_end, results } = room.attendance_result;
-
-      for (const [clientId, attResult] of Object.entries(results)) {
-        const uuid = room.clientIdToUUID.get(clientId);
-        if (!uuid) {
-          console.warn(`archiveRoomToDB: no uuid mapping for clientId ${clientId}, skip`);
-          continue;
-        }
+      for (const [uuid, attResult] of Object.entries(results)) {
+        const name = room.UUIDToName.get(uuid);
 
         // JSON 데이터 구성 (detail + per_block 포함)
         const logData = {
@@ -211,7 +249,7 @@ export async function archiveRoomToDB(room) {
         );
 
         console.log(
-          `[attendance_logs] Saved ${clientId} (${uuid}) → status=${status}, guest=${guest}`
+          `[attendance_logs] Saved ${name} (${uuid}) → status=${status}, guest=${guest}`
         );
       }
 
@@ -221,7 +259,14 @@ export async function archiveRoomToDB(room) {
         ).length})`
       );
     } else {
-      console.warn(`[attendance_logs] No attendance_result found for room ${room.db_room_id}`);
+      console.warn(
+        `[attendance_logs] ⚠️ No attendance_result found for room ${room.db_room_id}. Deleting room session...`
+      );
+
+      // ✅ 세션 전체 삭제 함수 호출
+      await deleteRoomSession(room.db_room_id, client);
+
+      console.log(`[attendance_logs] Room ${room.db_room_id} and all related data deleted via deleteRoomSession().`);
     }
 
 

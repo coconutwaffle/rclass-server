@@ -3,7 +3,7 @@ function group_handler(io, socket, rooms, context) {
         try {
             const { groupId, video_id, audio_id } = data;
             const room = rooms[context.roomId];
-            const clientData = room.clients.get(context.clientId);
+            const clientData = room.clients.get(context.account_uuid);
 
             if (!room || !clientData) {
                 return callback({ result: false, data: 'Not in a room' });
@@ -65,7 +65,7 @@ function group_handler(io, socket, rooms, context) {
     socket.on('get_groups', (data, callback) => {
         try {
             const room = rooms[context.roomId];
-            const clientData = room.clients.get(context.clientId);
+            const clientData = room.clients.get(context.account_uuid);
             data = { groups: Array.from(room.groups.entries()) };
             callback({ result: true, data });
         } catch (err) {
@@ -80,7 +80,7 @@ function group_handler(io, socket, rooms, context) {
         try {
             const { groupId } = data;
             const room = rooms[context.roomId];
-            const clientData = room.clients.get(context.clientId);
+            const clientData = room.clients.get(context.account_uuid);
 
             if (!room || !clientData) {
                 return callback({ result: false, data: 'Not in a room' });

@@ -93,7 +93,8 @@ export function attendance_handler(io, socket, rooms, context) {
             reason: r.reason,
             guest: r.guest,  
             detail: r.log_data.summary ?? {},
-            per_block: r.log_data.per_block ?? [], 
+            per_block: r.log_data.per_block ?? [],
+            name: context.logon_id
           },
         })),
       };

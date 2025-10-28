@@ -699,7 +699,11 @@ export function class_handler(io, socket, rooms, context) {
   socket.on("list_classes", async (data, callback) => {
     try {
       const includeDead = data?.includeDead || false;
-      const classes = await listClasses(includeDead);
+      var classes = await listClasses(includeDead);
+      classes = classes.filter(c => {
+        console.log(`class ${c.creator_id}, context.account_uuid=${context.account_uuid}`);
+        return c.creator_id === context.account_uuid
+      })
       callback({ result: true, data: classes });
     } catch (e) {
       console.error(`[ERROR] in 'list_classes' handler:`, e);

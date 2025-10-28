@@ -34,9 +34,9 @@ async function check_log_complete(io, socket, room, context)
     try {
         let not_complete_list = [] 
         room.clients_log_isComplete.forEach((value, key) => {
-            if(!value && key !== room.creator_client_id)
+            if(!value && key !== room.creator_uuid)
             {
-                console.log(`log_complete not complete ${key}`);
+                console.log(`log_complete not complete ${key} !== ${room.creator_uuid}===========`);
                 if(room.clients.has(key))
                 {
                     not_complete_list.push(key);
@@ -284,7 +284,7 @@ function evaluateAttendance(log, lessonStart, lessonEnd, policy) {
 
 
 // === 모드 1: 단순 로그만 받아서 판정 ===
-function evaluateAttendanceForClients(full_log, lessonStart, lessonEnd, policy, registeredStudents, creatorId) {
+function evaluateAttendanceForClients(full_log, lessonStart, lessonEnd, policy, registeredStudents, creatorId, room) {
   const results = {};
   for (const [id, mergedLog] of Object.entries(full_log)) {
     if (id === creatorId) continue; // 선생님 제외
@@ -295,6 +295,7 @@ function evaluateAttendanceForClients(full_log, lessonStart, lessonEnd, policy, 
       guest: !registeredStudents.includes(id),
       detail: mergedLog ? mergedLog.summary : null,
       per_block: mergedLog ? mergedLog.per_block : [],
+      name: room.UUIDToName.get(id) || id,
     };
   }
   return results;
@@ -309,22 +310,23 @@ export async function checkAttendance(io, socket, room, context) {
     const studs = await get_all_students(room);
 
     const full_log = room.merged_log?.full_log || {};
-    const results = evaluateAttendanceForClients(full_log, start_ts, end_ts, policy, studs, room.creator_client_id);
+    const results = evaluateAttendanceForClients(full_log, start_ts, end_ts, policy, studs, room.creator_client_id, room);
 
+    delete results[room.creator_uuid];
     room.attendance_result = {
       lesson_start: start_ts,
       lesson_end: end_ts,
       results,
     };
     console.log("[checkAttendance] result:", JSON.stringify(room.attendance_result, null, 2));
-    let reciverData = room.clients.get(room.creator_client_id);
+    let reciverData = room.clients.get(room.creator_uuid);
     if(reciverData)
     {
       reciverData.socket.emit("attendance_checked", room.attendance_result);
     }
     for(const [cid, clientData] of room.clients)
     {
-      if(cid !== room.creator_client_id)
+      if(cid !== room.creator_uuid)
       {
         const response = {
           lesson_start: start_ts,
@@ -439,7 +441,7 @@ export function lesson_handler(io, socket, rooms, context){
                 return callback({result:false, data:'log is required'});
             }
             const ts = context.log_start;
-            const perClientLog = room.clients_log.get(context.clientId);
+            const perClientLog = room.clients_log.get(context.account_uuid);
             perClientLog.set(ts, { end_ts: Date.now(), log: log_ });
             callback({result:true, data:{log_start:ts}});
             console.log("log_backup all " + JSON.stringify(
@@ -467,10 +469,10 @@ export function lesson_handler(io, socket, rooms, context){
             }
             console.log(JSON.stringify(log_));
             const ts = context.log_start;
-            const perClientLog = room.clients_log.get(context.clientId);
+            const perClientLog = room.clients_log.get(context.account_uuid);
             perClientLog.set(ts, { end_ts: Date.now(), log: log_ });
 
-            room.clients_log_isComplete.set(context.clientId, true);
+            room.clients_log_isComplete.set(context.account_uuid, true);
             await check_log_complete(io, socket, room, context);
             const kkk = {full_log: Object.fromEntries(perClientLog) };
             console.log(`ack log_complete to ${context.clientId}`); 
