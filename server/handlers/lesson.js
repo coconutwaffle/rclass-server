@@ -132,7 +132,7 @@ function mergeClientLogsWithLessonTime(clientLogs, lessonStart, lessonEnd) {
       });
 
       // 첫 등장/마지막 등장 기록
-      if (block.label === "OPEN" && block.total_frames > 0) {
+      if ((block.label === "OPEN" || block.label === "NOTOPEN") && block.total_frames > 0) {
         if (firstAppear_ms === null) {
           firstAppear_ms = relStart;
         }
@@ -255,14 +255,14 @@ function evaluateAttendance(log, lessonStart, lessonEnd, policy) {
   }
 
   // 4. 출석 비율 계산 (per_block 기반)
-  let openDuration = 0;
+  let faceDetectedDuration = 0;
   for (const block of per_block) {
     const duration = Math.max(0, block.end_ms - block.start_ms);
-    if (block.label === "OPEN") {
-      openDuration += duration;
+    if (block.label === "OPEN" || block.label === "NOTOPEN") {
+      faceDetectedDuration += duration;
     }
   }
-  const ratio = totalDuration > 0 ? openDuration / totalDuration : 0;
+  const ratio = totalDuration > 0 ? faceDetectedDuration / totalDuration : 0;
   const hasEnoughPart = ratio >= policy.min_part;
 
   // 5. 최종 판정
