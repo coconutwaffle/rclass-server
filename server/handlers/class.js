@@ -431,17 +431,32 @@ export async function editClassTime(lesson_time_id, context, { startWeekday, sta
 }
 
 
-// 4. 조회
+/**
+ * 특정 클래스의 수업 시간 목록 조회 (디버깅 로그 추가)
+ */
 export async function listClassTime(classId) {
+  console.log(`[listClassTime] >>> START (${classId})`);
+
   const res = await pool.query(
     `SELECT lesson_time_id, week_start, week_end, timezone, early_open_window
      FROM lesson_times WHERE class_id = $1 ORDER BY week_start`,
     [classId]
   );
 
-  return res.rows.map(row => {
+  console.log(`[listClassTime] DB rows (${res.rowCount}개):`);
+  for (const row of res.rows) {
+    console.log(
+      `  - lesson_time_id=${row.lesson_time_id}, week_start=${row.week_start}, week_end=${row.week_end}, tz=${row.timezone}, early_open_window=${row.early_open_window}`
+    );
+  }
+
+  const mapped = res.rows.map(row => {
     const start = fromWeekMinutes(row.week_start);
     const end = fromWeekMinutes(row.week_end);
+
+    console.log(
+      `[listClassTime] 변환결과: ${start.weekday} ${start.time} ~ ${end.weekday} ${end.time} (${row.timezone || '기본'})`
+    );
 
     return {
       lesson_time_id: row.lesson_time_id,
@@ -453,97 +468,62 @@ export async function listClassTime(classId) {
       end,
     };
   });
+
+  console.log(`[listClassTime] <<< END (${classId})`);
+  return mapped;
 }
 
 
+/**
+ * class_name 기준으로 class_id 찾은 후, ClassInfoById 호출
+ */
 export async function ClassInfo(roomName) {
   const client = await pool.connect();
   try {
-    // classId, creator 조회
+    // 1️⃣ class_id, creator 조회
     const res = await client.query(
-      `SELECT class_id, creator_id FROM classes WHERE class_name = $1`,
+      `SELECT class_id FROM classes WHERE class_name = $1`,
       [roomName]
     );
-    if (res.rowCount === 0) throw new Error("Class not found");
-    const { class_id: classId, creator_id: creatorId } = res.rows[0];
 
-    // 수업 시간 목록 불러오기
-    const lessonTimes = await listClassTime(classId);
-    if (lessonTimes.length === 0) {
-      return {
-        class_id: classId,
-        creator: creatorId,
-        lesson_start: null,
-        lesson_end: null,
-        tooEarly: false,
-        early_open_time: null
-      };
-    }
+    if (res.rowCount === 0) throw new Error(`Class not found: ${roomName}`);
 
-    const now = DateTime.utc();
-    let closest = null;
+    const { class_id } = res.rows[0];
 
-    for (const lt of lessonTimes) {
-      const tz = lt.timezone || "UTC";
-      const localNow = now.setZone(tz);
-
-      // 이번 주 시작 (일요일 0시)
-      const weekStart = localNow.startOf("week");
-
-      // 수업 시작/끝 시간
-      let start = weekStart.plus({ minutes: lt.week_start });
-      let end = weekStart.plus({ minutes: lt.week_end });
-
-      // 이미 끝난 경우 → 다음 주로 밀기
-      if (end < localNow) {
-        start = start.plus({ weeks: 1 });
-        end = end.plus({ weeks: 1 });
-      }
-
-      const early = start.minus({ milliseconds: lt.early_open_window });
-
-      // 가장 가까운 수업 선택
-      if (!closest || start < closest.start) {
-        closest = { start, end, early };
-      }
-    }
-
-    const tooEarly = now < closest.early;
-
-    return {
-      class_id: classId,
-      creator: creatorId,
-      lesson_start: closest.start.toUTC().toMillis(),   // UTC ms
-      lesson_end: closest.end.toUTC().toMillis(),       // UTC ms
-      tooEarly,
-      early_open_time: closest.early.toUTC().toMillis() // UTC ms
-    };
+    // 2️⃣ 일관성 보장을 위해 ClassInfoById 재사용
+    return await ClassInfoById(class_id);
   } finally {
     client.release();
   }
 }
 
 /**
- * 특정 class_id로 수업 정보 조회
- * @async
- * @param {string} classId - 클래스 UUID (PK)
+ * 특정 class_id로 수업 정보 조회 (디버깅 로그 포함)
+ * @param {string} classId - 클래스 UUID
  * @returns {Promise<object>} 수업 일정 및 상태 정보
  */
 export async function ClassInfoById(classId) {
   const client = await pool.connect();
   try {
-    // 1️⃣ class_id 기반으로 creator 조회
+    console.log(`\n========== [ClassInfoById] START (${classId}) ==========`);
+
+    // 1️⃣ 클래스 기본 정보 조회
     const res = await client.query(
       `SELECT class_id, class_name, creator_id FROM classes WHERE class_id = $1`,
       [classId]
     );
+
     if (res.rowCount === 0) throw new Error("Class not found");
 
     const { class_id, class_name, creator_id } = res.rows[0];
+    console.log(`[ClassInfoById] class_name=${class_name}, creator=${creator_id}`);
 
     // 2️⃣ 수업 시간 목록 조회
     const lessonTimes = await listClassTime(class_id);
+    console.log(`[ClassInfoById] 수업 시간 ${lessonTimes.length}개 로드됨.`);
+
     if (lessonTimes.length === 0) {
+      console.warn(`[ClassInfoById] ⚠️ 등록된 수업 시간이 없습니다.`);
       return {
         class_id,
         class_name,
@@ -551,37 +531,67 @@ export async function ClassInfoById(classId) {
         lesson_start: null,
         lesson_end: null,
         tooEarly: false,
-        early_open_time: null
+        early_open_time: null,
       };
     }
 
-    // 3️⃣ 현재 시각과 비교해 가장 가까운 수업 계산
-    const now = DateTime.utc();
+    // 3️⃣ 현재 시각 (KST)
+    const now = DateTime.now().setZone("Asia/Seoul");
+    console.log(`[Time] now (KST): ${now.toISO()}`);
+
     let closest = null;
 
+    // 4️⃣ 각 수업 시간 반복
     for (const lt of lessonTimes) {
-      const tz = lt.timezone || "UTC";
+      const tz = lt.timezone || "Asia/Seoul";
       const localNow = now.setZone(tz);
-      const weekStart = localNow.startOf("week");
+      const weekStart = localNow.startOf("week").minus({ days: 1 }); // 일요일 기준 보정
 
       let start = weekStart.plus({ minutes: lt.week_start });
       let end = weekStart.plus({ minutes: lt.week_end });
 
-      // 이미 끝났으면 다음 주로 밀기
-      if (end < localNow) {
+      // --- ✅ 진행 중인 수업 체크 ---
+      const isOngoing = start <= localNow && localNow <= end;
+
+      if (isOngoing) {
+        console.log(`  ⚡ 진행 중인 수업 감지: ${start.toISO()} ~ ${end.toISO()}`);
+      } else if (end < localNow) {
+        // 이미 끝난 수업은 다음 주로 이동
         start = start.plus({ weeks: 1 });
         end = end.plus({ weeks: 1 });
       }
 
-      const early = start.minus({ milliseconds: lt.early_open_window });
+      const early = start.minus({ minutes: lt.early_open_window });
 
       if (!closest || start < closest.start) {
-        closest = { start, end, early };
+        closest = { start, end, early, tz };
       }
+    }
+
+    // 5️⃣ 모든 수업이 과거인 경우 (예외)
+    if (!closest) {
+      console.warn(`[ClassInfoById] 모든 수업이 과거로 계산됨. 다음 주 첫 수업 강제 지정.`);
+      const lt = lessonTimes[0];
+      const tz = lt.timezone || "Asia/Seoul";
+      const base = now.setZone(tz).startOf("week").set({ weekday: 1 }).plus({ weeks: 1 });
+      const start = base.plus({ minutes: lt.week_start });
+      const end = base.plus({ minutes: lt.week_end });
+      const early = start.minus({ minutes: lt.early_open_window });
+      closest = { start, end, early, tz };
     }
 
     const tooEarly = now < closest.early;
 
+    // 6️⃣ 결과 출력
+    console.log("\n[Result]");
+    console.log(`  class: ${class_name}`);
+    console.log(`  lesson_start: ${closest.start.toISO()} (${closest.start.toUTC().toMillis()})`);
+    console.log(`  lesson_end:   ${closest.end.toISO()} (${closest.end.toUTC().toMillis()})`);
+    console.log(`  early_open:   ${closest.early.toISO()} (${closest.early.toUTC().toMillis()})`);
+    console.log(`  tooEarly:     ${tooEarly}`);
+    console.log(`========== [ClassInfoById] END (${classId}) ==========\n`);
+
+    // 7️⃣ 반환
     return {
       class_id,
       class_name,
@@ -589,8 +599,11 @@ export async function ClassInfoById(classId) {
       lesson_start: closest.start.toUTC().toMillis(),
       lesson_end: closest.end.toUTC().toMillis(),
       tooEarly,
-      early_open_time: closest.early.toUTC().toMillis()
+      early_open_time: closest.early.toUTC().toMillis(),
     };
+  } catch (err) {
+    console.error(`[ClassInfoById] ❌ ERROR:`, err);
+    throw err;
   } finally {
     client.release();
   }

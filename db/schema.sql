@@ -49,7 +49,7 @@ CREATE TABLE lesson_times (
     week_start INT NOT NULL,  -- 주 시작부터 분 단위 (0 ~ 10079)
     week_end   INT NOT NULL,  -- 주 시작부터 분 단위 (end <= start 이면 다음 주로 보정)
     timezone TEXT NOT NULL,
-    early_open_window BIGINT NOT NULL DEFAULT 3600000
+    early_open_window BIGINT NOT NULL DEFAULT 60
 );
 
 -- =========================================
